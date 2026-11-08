@@ -1,19 +1,5 @@
 """
 Automated reliability and regression test suite for youtube-analyzer-web.
-Covers Render Free 512MB RAM protections and core functionality:
-- Concurrency serialization (MAX_CONCURRENT_DOWNLOADS=1, 503 rejection)
-- Height capping and elimination of unconstrained /best and /worst, with H.264 priority
-- Explicit Node.js JS runtime configuration in get_ydl_base_opts (required by yt-dlp 2026+)
-- Removal of broken 'tv' client and presence of formats=['missing_pot'] fallback
-- Error message credential sanitization (no sensitive data leaks)
-- Pre-flight check endpoint (/api/check-download) with video accessibility, 1080p cap, live stream & duration guard
-- Two-phase download (/api/prepare-download + /api/stream/{token}) preventing browser 400/404 error screens
-- cgroup/RSS memory and Node.js diagnostics (/api/health)
-- Cyrillic Content-Disposition latin-1 HTTP header safety
-- WebVTT, JSON3, and SRV3 XML subtitle conversion to SRT and clean TXT
-- Storyboard (mhtml) filtering
-- Writable cookiefile copy for read-only mounts (/etc/secrets/cookies.txt)
-- Extended URL validation (query param order, music.youtube.com, shorts, live)
 """
 
 import os
@@ -25,7 +11,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-# Ensure project root is on sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -36,6 +21,7 @@ from starlette.testclient import TestClient
 from backend.app.config import settings
 from backend.app.limiter import validate_youtube_url
 from backend.app.main import app, make_content_disposition
+from backend.app.schemas import SubtitleOption
 from backend.app.services.cleanup import PROTECTED_FILENAMES
 from backend.app.services.youtube import (
     sanitize_error_message,
@@ -49,6 +35,7 @@ from backend.app.services.youtube import (
     _is_storyboard_or_non_media,
     get_ydl_base_opts,
     _CLIENT_PROFILES,
+    _subtitle_sort_key,
 )
 
 
@@ -114,15 +101,27 @@ class TestReliabilityAndSafety(unittest.TestCase):
         self.assertIn("js_runtimes", opts)
         self.assertIn("node", opts["js_runtimes"])
 
-    def test_client_profiles_no_tv_and_has_missing_pot(self):
-        """Ensures 'tv' client (which causes 'The page needs to be reloaded') is excluded and missing_pot is present."""
+    def test_client_profiles_cookie_free_first_and_no_tv(self):
+        """Ensures first profile runs with use_cookies=False so android_vr/ios are not skipped by yt-dlp."""
+        self.assertFalse(_CLIENT_PROFILES[0]["use_cookies"])
         has_missing_pot = False
         for prof in _CLIENT_PROFILES:
-            clients = prof.get("player_client", [])
+            y_args = prof.get("youtube_args", {})
+            clients = y_args.get("player_client", [])
             self.assertNotIn("tv", clients)
-            if "missing_pot" in prof.get("formats", []):
+            if "missing_pot" in y_args.get("formats", []):
                 has_missing_pot = True
         self.assertTrue(has_missing_pot)
+
+    def test_subtitle_sorting_ru_en_first(self):
+        """Ensures Russian and English subtitles sort before other languages."""
+        subs = [
+            SubtitleOption(lang="qu", name="Quechua", is_auto=True, txt_url="", srt_url=""),
+            SubtitleOption(lang="en", name="English", is_auto=True, txt_url="", srt_url=""),
+            SubtitleOption(lang="ru", name="Russian", is_auto=True, txt_url="", srt_url=""),
+        ]
+        subs.sort(key=_subtitle_sort_key)
+        self.assertEqual([s.lang for s in subs], ["ru", "en", "qu"])
 
     # 4. Concurrency serialization and 503 rejection
     def test_download_slot_concurrency_serialization(self):
@@ -324,7 +323,7 @@ class TestReliabilityAndSafety(unittest.TestCase):
         """Ensures COOKIES_TEXT is normalized and written to a writable file in STORAGE_DIR."""
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
-            with patch.object(settings, "STORAGE_DIR", tmp_path), \
+            with patch.object(settings, "STORAGE_DIR", tmpdir and tmp_path), \
                  patch.object(settings, "COOKIES_FILE", ""), \
                  patch.object(settings, "COOKIES_TEXT", ".youtube.com\\tTRUE\\t/\\tTRUE\\t0\\tSID\\t12345"):
                 cookie_file = _prepare_writable_cookiefile()

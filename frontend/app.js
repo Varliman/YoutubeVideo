@@ -5,6 +5,7 @@
 // Application state
 let currentVideoData = null;
 let currentTranscriptText = "";
+let showAllSubtitles = false;
 
 // DOM Elements
 const serverStatusDot = document.getElementById("serverStatusDot");
@@ -81,7 +82,6 @@ async function checkHealth() {
 
 document.addEventListener("DOMContentLoaded", () => {
   checkHealth();
-  // Periodic health check every 4 minutes while tab is open to prevent Render Free spin-down
   setInterval(checkHealth, 240000);
   setupEventListeners();
 });
@@ -90,7 +90,6 @@ document.addEventListener("DOMContentLoaded", () => {
  * 2. Event Listeners Setup
  * ------------------------------------------------------------- */
 function setupEventListeners() {
-  // Input clear / paste handlers
   urlInput.addEventListener("input", () => {
     if (urlInput.value.trim().length > 0) {
       clearBtn.classList.remove("hidden");
@@ -118,10 +117,8 @@ function setupEventListeners() {
     }
   });
 
-  // Alert close
   alertCloseBtn.addEventListener("click", hideAlert);
 
-  // Form submission
   analyzeForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const url = urlInput.value.trim();
@@ -129,7 +126,6 @@ function setupEventListeners() {
     await performAnalysis(url);
   });
 
-  // Tabs switching
   document.querySelectorAll(".tab-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
       document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
@@ -142,7 +138,6 @@ function setupEventListeners() {
     });
   });
 
-  // Modal actions
   modalCloseBtn.addEventListener("click", closeModal);
   modalBackdrop.addEventListener("click", closeModal);
   document.addEventListener("keydown", (e) => {
@@ -158,7 +153,6 @@ function setupEventListeners() {
     }
   });
 
-  // Copy video URL button
   copyUrlBtn.addEventListener("click", () => {
     if (currentVideoData && currentVideoData.original_url) {
       navigator.clipboard.writeText(currentVideoData.original_url);
@@ -197,6 +191,7 @@ async function performAnalysis(url) {
 
     const data = await res.json();
     currentVideoData = data;
+    showAllSubtitles = false;
     renderResults(data);
     checkHealth();
   } catch (err) {
@@ -211,7 +206,6 @@ async function performAnalysis(url) {
  * 4. Render UI Components
  * ------------------------------------------------------------- */
 function renderResults(data) {
-  // Populate video details
   videoThumb.src = data.thumbnail || "";
   videoThumb.alt = data.title;
   videoDuration.textContent = data.duration_str;
@@ -233,13 +227,11 @@ function renderResults(data) {
   originalVideoLink.href = data.original_url;
   videoDescription.textContent = data.description || "Описание отсутствует.";
 
-  // Render tabs
   renderVideoOptions(data.video_options);
   renderAudioOptions(data.audio_options);
   renderSubtitles(data.subtitle_options);
   renderFormatsTable(data.all_formats);
 
-  // Reveal result
   resultSection.classList.remove("hidden");
   resultSection.scrollIntoView({ behavior: "smooth", block: "start" });
 }
@@ -294,7 +286,7 @@ function renderAudioOptions(options) {
       </div>
       <div class="option-title">${escapeHtml(opt.label)}</div>
       <button type="button" class="download-stream-btn" data-url="${escapeHtml(opt.download_url)}" ${!isAvailable ? "disabled" : ""}>
-        <span>${isAvailable ? "Скачать " + escapeHtml(opt.format.toUpperCase()) : "Требуется FFmpeg"}</span>
+        <span>${isAvailable ? "Скачать " + escapeHtml(opt.format.toUpperCase()) : "Недоступно"}</span>
       </button>
     `;
 
@@ -306,6 +298,11 @@ function renderAudioOptions(options) {
 
     audioOptionsGrid.appendChild(card);
   });
+}
+
+function isPrimaryRuEnLang(lang) {
+  const l = (lang || "").toLowerCase();
+  return l === "ru" || l.startsWith("ru-") || l.startsWith("ru_") || l === "en" || l.startsWith("en-") || l.startsWith("en_");
 }
 
 function renderSubtitles(subtitles) {
@@ -322,41 +319,124 @@ function renderSubtitles(subtitles) {
     return;
   }
 
-  subtitles.forEach((sub) => {
-    const item = document.createElement("div");
-    item.className = "subtitle-item";
-    item.innerHTML = `
-      <div class="subtitle-lang-info">
-        <span class="option-badge">${escapeHtml(sub.lang)}</span>
-        <span><strong>${escapeHtml(sub.name)}</strong></span>
-      </div>
-      <div class="subtitle-actions">
-        <button type="button" class="btn btn-secondary preview-sub-btn">
-          <span>Предпросмотр</span>
-        </button>
-        <button type="button" class="btn btn-primary download-txt-btn">
-          <span>Скачать .txt</span>
-        </button>
-        <button type="button" class="btn btn-secondary download-srt-btn">
-          <span>Скачать .srt</span>
-        </button>
-      </div>
-    `;
+  const primarySubs = subtitles.filter((s) => isPrimaryRuEnLang(s.lang));
+  const otherSubsCount = subtitles.length - primarySubs.length;
 
-    item.querySelector(".preview-sub-btn").addEventListener("click", () => {
-      openTranscriptModal(sub);
+  // Toolbar with search input for finding other languages quickly without scrolling 150 items
+  const toolbar = document.createElement("div");
+  toolbar.className = "subtitles-toolbar";
+  toolbar.innerHTML = `
+    <div class="subtitles-search-box">
+      <span class="search-icon">🔍</span>
+      <input
+        type="text"
+        id="subSearchInput"
+        class="subtitles-search-input"
+        placeholder="Поиск языка субтитров (например: Deutsch, Español, Français, de, es, ja)..."
+        autocomplete="off"
+      >
+    </div>
+    ${
+      otherSubsCount > 0
+        ? `<button type="button" id="toggleAllSubsBtn" class="btn btn-secondary">
+             <span>Показать все языки (${subtitles.length})</span>
+           </button>`
+        : ""
+    }
+  `;
+  subtitlesContent.appendChild(toolbar);
+
+  const hint = document.createElement("div");
+  hint.className = "subtitles-hint";
+  subtitlesContent.appendChild(hint);
+
+  const listWrapper = document.createElement("div");
+  listWrapper.className = "subtitles-container";
+  subtitlesContent.appendChild(listWrapper);
+
+  const searchInput = toolbar.querySelector("#subSearchInput");
+  const toggleBtn = toolbar.querySelector("#toggleAllSubsBtn");
+
+  function updateSubtitlesList() {
+    const query = (searchInput.value || "").trim().toLowerCase();
+    listWrapper.innerHTML = "";
+
+    let filtered = [];
+    if (query.length > 0) {
+      filtered = subtitles.filter(
+        (s) =>
+          (s.lang && s.lang.toLowerCase().includes(query)) ||
+          (s.name && s.name.toLowerCase().includes(query))
+      );
+      hint.textContent = `Найдено языков по запросу «${query}»: ${filtered.length}`;
+    } else if (showAllSubtitles || primarySubs.length === 0) {
+      filtered = subtitles;
+      hint.textContent = `Показаны все доступные языки (${subtitles.length})`;
+    } else {
+      filtered = primarySubs;
+      hint.textContent =
+        otherSubsCount > 0
+          ? `По умолчанию показаны только Русский и Английский (${primarySubs.length}). Остальные ${otherSubsCount} яз. доступны через поиск выше.`
+          : `Доступные субтитры (${primarySubs.length})`;
+    }
+
+    if (toggleBtn) {
+      toggleBtn.querySelector("span").textContent = showAllSubtitles
+        ? "Оставить только RU / EN"
+        : `Показать все языки (${subtitles.length})`;
+    }
+
+    if (filtered.length === 0) {
+      listWrapper.innerHTML = `<p class="text-muted">Язык по запросу «${escapeHtml(query)}» не найден.</p>`;
+      return;
+    }
+
+    filtered.forEach((sub) => {
+      const item = document.createElement("div");
+      item.className = "subtitle-item";
+      item.innerHTML = `
+        <div class="subtitle-lang-info">
+          <span class="option-badge">${escapeHtml(sub.lang)}</span>
+          <span><strong>${escapeHtml(sub.name)}</strong></span>
+        </div>
+        <div class="subtitle-actions">
+          <button type="button" class="btn btn-secondary preview-sub-btn">
+            <span>Предпросмотр</span>
+          </button>
+          <button type="button" class="btn btn-primary download-txt-btn">
+            <span>Скачать .txt</span>
+          </button>
+          <button type="button" class="btn btn-secondary download-srt-btn">
+            <span>Скачать .srt</span>
+          </button>
+        </div>
+      `;
+
+      item.querySelector(".preview-sub-btn").addEventListener("click", () => {
+        openTranscriptModal(sub);
+      });
+
+      item.querySelector(".download-txt-btn").addEventListener("click", function () {
+        triggerDownload(this, sub.txt_url);
+      });
+
+      item.querySelector(".download-srt-btn").addEventListener("click", function () {
+        triggerDownload(this, sub.srt_url);
+      });
+
+      listWrapper.appendChild(item);
     });
+  }
 
-    item.querySelector(".download-txt-btn").addEventListener("click", function () {
-      triggerDownload(this, sub.txt_url);
+  searchInput.addEventListener("input", updateSubtitlesList);
+  if (toggleBtn) {
+    toggleBtn.addEventListener("click", () => {
+      showAllSubtitles = !showAllSubtitles;
+      updateSubtitlesList();
     });
+  }
 
-    item.querySelector(".download-srt-btn").addEventListener("click", function () {
-      triggerDownload(this, sub.srt_url);
-    });
-
-    subtitlesContent.appendChild(item);
-  });
+  updateSubtitlesList();
 }
 
 function renderFormatsTable(formats) {
@@ -395,7 +475,6 @@ async function triggerDownload(btn, url) {
   `;
 
   try {
-    // 1. Parse target download URL parameters
     const urlObj = new URL(url, window.location.origin);
     const ytUrl = urlObj.searchParams.get("url");
     let kind = "video";
@@ -410,8 +489,6 @@ async function triggerDownload(btn, url) {
     if (format) prepParams.set("format", format);
     if (lang) prepParams.set("lang", lang);
 
-    // 2. Prepare file on server via fetch() so any YouTube/yt-dlp errors are caught
-    // cleanly as JSON and shown in the UI AlertBox instead of crashing Firefox into a 400/404 page.
     const prepRes = await fetch("/api/prepare-download?" + prepParams.toString());
     if (!prepRes.ok) {
       let errorDetail = "Ошибка при подготовке файла на сервере";
@@ -429,8 +506,6 @@ async function triggerDownload(btn, url) {
     const streamUrl = prepData.stream_url;
     const downloadFilename = prepData.filename || "download";
 
-    // 3. File is guaranteed ready on disk: trigger native browser download via <a href="/api/stream/{token}">.
-    // Avoids buffering large files in browser JS heap while guaranteeing zero 400/404 navigation errors.
     showToast("Файл готов! Начинается сохранение в браузере...");
     const a = document.createElement("a");
     a.href = streamUrl;

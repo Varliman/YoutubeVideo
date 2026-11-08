@@ -169,7 +169,6 @@ uvicorn[standard]>=0.28.0
 pydantic>=2.6.0
 python-dotenv>=1.0.0
 yt-dlp[default,curl-cffi]>=2025.1.1
-bgutil-ytdlp-pot-provider>=1.0.0
 imageio-ffmpeg>=0.4.9
 pytest>=8.0.0
 ```
@@ -295,9 +294,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install lightweight Rust PO-Token provider binary (bgutil-pot) for bypassing YouTube datacenter blocks
-RUN curl -fsSL https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/latest/download/bgutil-pot-linux-x86_64 \
-    -o /usr/local/bin/bgutil-pot && chmod +x /usr/local/bin/bgutil-pot || true
+# Install lightweight Rust PO-Token provider binary (bgutil-pot) + matching yt-dlp plugin zip
+RUN mkdir -p /etc/yt-dlp/plugins && \
+    curl -fsSL https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/latest/download/bgutil-pot-linux-x86_64 \
+    -o /usr/local/bin/bgutil-pot && chmod +x /usr/local/bin/bgutil-pot && \
+    curl -fsSL https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/latest/download/bgutil-ytdlp-pot-provider-rs.zip \
+    -o /etc/yt-dlp/plugins/bgutil-ytdlp-pot-provider-rs.zip || true
 
 # Create non-root application user for container security
 RUN groupadd -r appgroup && useradd -r -g appgroup -d /app -s /sbin/nologin appuser
@@ -1328,51 +1330,93 @@ def _has_playable_formats(info: Optional[dict]) -> bool:
     return any(not _is_storyboard_or_non_media(f) for f in formats)
 
 
-# Client fallback profiles for yt-dlp 2026+ (avoiding broken 'tv' client that causes 'The page needs to be reloaded')
+# Client fallback profiles for yt-dlp 2026+
+# CRITICAL FIX: In yt-dlp 2026+, passing cookies causes yt-dlp to SKIP 'android_vr', 'ios', and 'android'
+# ("WARNING: Skipping client 'android_vr' since it does not support cookies"), and logged-in 'web' clients
+# are frequently forced into YouTube's SABR-only experiment (returning 0 downloadable URLs!).
+# Therefore, we try cookie-free mobile/VR clients FIRST, then cookie-enabled web_safari/web_embedded/mweb!
 _CLIENT_PROFILES: list[dict] = [
-    # Profile 1: Default clients + web_embedded + mweb + android_vr with Node.js EJS solver
+    # Profile 1: Cookie-free Android VR + iOS + MWeb + Web Embedded (avoids SABR & cookie-skipping!)
     {
-        "player_client": ["default", "web_embedded", "mweb", "android_vr"],
+        "use_cookies": False,
+        "use_proxy": True,
+        "youtube_args": {
+            "player_client": ["android_vr", "ios", "web_embedded", "mweb"],
+            "formats": ["missing_pot"],
+        },
     },
-    # Profile 2: Enable formats=missing_pot so yt-dlp does NOT skip streams when PO Token is absent on datacenter IPs
+    # Profile 2: Cookie-enabled Web Safari + Web Embedded + MWeb + Web (for 18+ or cookie-gated IPs)
     {
-        "player_client": ["default", "ios", "mweb", "android_vr", "web_embedded"],
-        "formats": ["missing_pot"],
+        "use_cookies": True,
+        "use_proxy": True,
+        "youtube_args": {
+            "player_client": ["web_safari", "web_embedded", "mweb", "web"],
+            "formats": ["missing_pot"],
+        },
     },
-    # Profile 3: Mobile/VR clients with missing_pot + duplicate formats unlocked
+    # Profile 3: Cookie-free Android + iOS + MWeb with duplicate & missing_pot unlocked
     {
-        "player_client": ["android_vr", "mweb", "ios", "web_safari"],
-        "formats": ["missing_pot", "duplicate"],
+        "use_cookies": False,
+        "use_proxy": True,
+        "youtube_args": {
+            "player_client": ["android", "android_vr", "ios", "mweb", "web_safari"],
+            "formats": ["missing_pot", "duplicate"],
+        },
+    },
+    # Profile 4: Direct connection without proxy (in case user's PROXY_URL blocks googlevideo streams)
+    {
+        "use_cookies": False,
+        "use_proxy": False,
+        "youtube_args": {
+            "player_client": ["android_vr", "ios", "web_embedded", "mweb"],
+            "formats": ["missing_pot"],
+        },
     },
 ]
 
 
 def _extract_with_client_fallbacks(url: str, base_extra_opts: dict, download: bool = False) -> dict:
     """
-    Executes yt-dlp extract_info with automatic fallback across client profiles.
-    If download=False (metadata/analyze mode) and all profiles fail to unlock playable streams,
-    falls back to ignore_no_formats_error=True so metadata and subtitles still work.
+    Executes yt-dlp extract_info with automatic fallback across client profiles
+    (both without cookies to unlock android_vr/ios and with cookies for 18+/authenticated streams).
     """
+    has_cookies_configured = bool(
+        settings.COOKIES_FILE or settings.COOKIES_TEXT or settings.COOKIES_FROM_BROWSER
+    )
+    has_proxy_configured = bool(settings.PROXY_URL)
     last_exc = None
-    for idx, youtube_args in enumerate(_CLIENT_PROFILES):
+
+    for idx, profile in enumerate(_CLIENT_PROFILES):
+        use_cookies = profile.get("use_cookies", True)
+        use_proxy = profile.get("use_proxy", True)
+
+        # Skip cookie profile if no cookies are configured
+        if use_cookies and not has_cookies_configured and idx == 1:
+            continue
+        # Skip non-proxy fallback if no proxy was configured in the first place
+        if not use_proxy and not has_proxy_configured:
+            continue
+
         extra = dict(base_extra_opts)
-        extra["extractor_args"] = {"youtube": dict(youtube_args)}
-        opts = get_ydl_base_opts(extra)
+        extra["extractor_args"] = {"youtube": dict(profile["youtube_args"])}
+        opts = get_ydl_base_opts(extra, use_cookies=use_cookies, use_proxy=use_proxy)
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=download)
-                if download or _has_playable_formats(info) or (info and info.get("formats")):
+                if download or _has_playable_formats(info):
                     return info
         except Exception as e:
             last_exc = e
             err_str = str(e)
-            logger.warning(f"yt-dlp attempt {idx + 1} failed for {url}: {sanitize_error_message(e)}")
-            if "Private video" in err_str or "Video unavailable" in err_str or "File is larger than max-filesize" in err_str:
+            logger.warning(
+                f"yt-dlp attempt {idx + 1} (cookies={use_cookies}, proxy={use_proxy}) failed for {url}: "
+                f"{sanitize_error_message(e)}"
+            )
+            if "Video unavailable" in err_str or "File is larger than max-filesize" in err_str:
                 raise e
             continue
 
-    # If we are only extracting metadata (e.g. /api/analyze or subtitles) and formats were blocked,
-    # extract with ignore_no_formats_error=True so video info & transcripts remain accessible!
+    # Final fallback for metadata/subtitles if all video stream profiles were blocked
     if not download:
         try:
             fallback_extra = dict(base_extra_opts)
@@ -1383,7 +1427,7 @@ def _extract_with_client_fallbacks(url: str, base_extra_opts: dict, download: bo
                     "formats": ["missing_pot"],
                 }
             }
-            opts = get_ydl_base_opts(fallback_extra)
+            opts = get_ydl_base_opts(fallback_extra, use_cookies=has_cookies_configured, use_proxy=has_proxy_configured)
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 if info:
@@ -1399,7 +1443,7 @@ def _extract_with_client_fallbacks(url: str, base_extra_opts: dict, download: bo
 def get_cached_or_extract_info(url: str, extra_opts: Optional[dict] = None) -> dict:
     """
     Retrieves video info dictionary from in-memory cache or extracts via yt-dlp.
-    Cached for 180 seconds to eliminate redundant network extraction between analyze, pre-check, and download.
+    Only caches for the full TTL if playable media formats were found.
     """
     now = time.time()
     with _INFO_CACHE_LOCK:
@@ -1408,7 +1452,7 @@ def get_cached_or_extract_info(url: str, extra_opts: Optional[dict] = None) -> d
             _INFO_CACHE.pop(k, None)
 
         cached = _INFO_CACHE.get(url)
-        if cached and (now - cached[0] < _CACHE_TTL_SECONDS):
+        if cached and (now - cached[0] < _CACHE_TTL_SECONDS) and _has_playable_formats(cached[1]):
             return cached[1]
 
     req_opts = {
@@ -1485,10 +1529,6 @@ def check_download_feasibility(
 ) -> Tuple[bool, str, Optional[str]]:
     """
     Pre-flight check before initiating heavy file downloads.
-    1. Checks server limits (FFmpeg, active download semaphore, max height cap).
-    2. Checks video accessibility (extracts/uses cached metadata, detects private/429/403/live/duration).
-    3. Checks format/quality availability (verifies playable video height <= requested quality).
-    Returns: (is_ok: bool, message: str, title: Optional[str])
     """
     if kind == "video" and quality == "1080p" and settings.MAX_VIDEO_HEIGHT and settings.MAX_VIDEO_HEIGHT < 1080:
         return (
@@ -1546,7 +1586,7 @@ def check_download_feasibility(
         want = min(target_h, cap)
         formats = [f for f in (info.get("formats") or []) if not _is_storyboard_or_non_media(f)]
         heights = [f.get("height") or 0 for f in formats]
-        if not any(0 < h <= want for h in heights):
+        if heights and not any(0 < h <= want for h in heights):
             return False, f"Видео недоступно в качестве ≤{want}p.", title
 
     elif kind == "transcript" and lang:
@@ -1643,8 +1683,6 @@ def format_duration(seconds: Optional[int | float]) -> str:
 def _prepare_writable_cookiefile() -> Optional[str]:
     """
     Ensures yt-dlp always receives a WRITABLE cookiefile path inside STORAGE_DIR.
-    Prevents 'OSError: [Errno 30] Read-only file system' when COOKIES_FILE is mounted
-    read-only (e.g. Render Secret Files at /etc/secrets/cookies.txt or Docker :ro volumes).
     """
     runtime_cookies = settings.STORAGE_DIR / "runtime_cookies.txt"
 
@@ -1676,13 +1714,16 @@ def _prepare_writable_cookiefile() -> Optional[str]:
     return None
 
 
-def get_ydl_base_opts(extra_opts: Optional[dict] = None) -> dict:
+def get_ydl_base_opts(
+    extra_opts: Optional[dict] = None,
+    use_cookies: bool = True,
+    use_proxy: bool = True,
+) -> dict:
     """
     Constructs base yt-dlp options including explicit Node.js runtime activation
-    (CRITICAL for yt-dlp 2026+ which only enables deno by default!), proxy, cookies,
-    single-thread FFmpeg, and timeouts.
+    (CRITICAL for yt-dlp 2026+ which only enables deno by default!), optional proxy/cookies
+    toggling (so android_vr and ios clients are not skipped due to cookies!), single-thread FFmpeg, and timeouts.
     """
-    # Configure JS runtimes explicitly: yt-dlp 2026+ only checks deno by default unless node is passed!
     js_runtimes = {}
     node_bin = shutil.which("node") or shutil.which("nodejs")
     if node_bin:
@@ -1714,14 +1755,15 @@ def get_ydl_base_opts(extra_opts: Optional[dict] = None) -> dict:
     if getattr(settings, "FORCE_IPV4", True):
         opts["source_address"] = "0.0.0.0"
 
-    if settings.PROXY_URL:
+    if use_proxy and settings.PROXY_URL:
         opts["proxy"] = settings.PROXY_URL
 
-    writable_cookiefile = _prepare_writable_cookiefile()
-    if writable_cookiefile:
-        opts["cookiefile"] = writable_cookiefile
-    elif settings.COOKIES_FROM_BROWSER:
-        opts["cookiesfrombrowser"] = (settings.COOKIES_FROM_BROWSER, None, None, None)
+    if use_cookies:
+        writable_cookiefile = _prepare_writable_cookiefile()
+        if writable_cookiefile:
+            opts["cookiefile"] = writable_cookiefile
+        elif settings.COOKIES_FROM_BROWSER:
+            opts["cookiesfrombrowser"] = (settings.COOKIES_FROM_BROWSER, None, None, None)
 
     ffmpeg_bin = get_ffmpeg_path()
     if ffmpeg_bin:
@@ -1742,7 +1784,7 @@ def _raise_for_ydl_error(e: Exception, context_action: str = "обработке
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=(
                 "YouTube временно ограничил запросы с IP-адреса сервера (HTTP 429 Too Many Requests). "
-                "Для стабильной работы на облачном хостинге Render укажите COOKIES_TEXT или PROXY_URL в Environment Variables."
+                "Проверьте работоспособность вашего PROXY_URL или обновите COOKIES_TEXT."
             )
         )
     elif (
@@ -1756,9 +1798,9 @@ def _raise_for_ydl_error(e: Exception, context_action: str = "обработке
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
-                "YouTube запросил проверку авторизации или защиту от ботов (HTTP 403 / 'Sign in to confirm you’re not a bot') "
-                "для IP-адреса датацентра Render. Чтобы скачивать любые видео без ограничений, добавьте переменную "
-                "COOKIES_TEXT (содержимое файла cookies.txt из браузера) или PROXY_URL в настройках Environment на Render."
+                "YouTube отклонил доступ к медиапотоку (HTTP 403 / защита от ботов). "
+                "Если у вас указаны старые COOKIES_TEXT, попробуйте обновить их из режима Инкогнито браузера "
+                "или временно очистить COOKIES_TEXT, чтобы сервер использовал мобильные клиенты android_vr/ios."
             )
         )
     elif "requested format is not available" in lower_msg:
@@ -1766,8 +1808,8 @@ def _raise_for_ydl_error(e: Exception, context_action: str = "обработке
             status_code=HTTP_422_STATUS,
             detail=(
                 f"Видеопоток в выбранном качестве (лимит ≤{settings.MAX_VIDEO_HEIGHT}p) недоступен. "
-                "YouTube заблокировал отдачу прямых видеопотоков для IP-адреса датацентра Render — "
-                "добавьте COOKIES_TEXT (куки из браузера) или PROXY_URL в настройки Environment на Render."
+                "Если в настройках Render указан COOKIES_TEXT, аккаунт мог попасть под эксперимент SABR от YouTube — "
+                "попробуйте удалить или обновить COOKIES_TEXT или проверить PROXY_URL."
             )
         )
     elif "file is larger than max-filesize" in lower_msg:
@@ -1785,6 +1827,22 @@ def _raise_for_ydl_error(e: Exception, context_action: str = "обработке
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Ошибка yt-dlp при {context_action}: {error_msg}"
         )
+
+
+def _subtitle_sort_key(sub: SubtitleOption) -> Tuple[int, int, str]:
+    """
+    Sorts subtitle options so Russian ('ru', 'ru-*') and English ('en', 'en-*') appear at the very top,
+    followed by manual subtitles, then alphabetical order.
+    """
+    lang_low = sub.lang.lower()
+    if lang_low == "ru" or lang_low.startswith("ru-") or lang_low.startswith("ru_"):
+        lang_Order = 0
+    elif lang_low == "en" or lang_low.startswith("en-") or lang_low.startswith("en_"):
+        lang_Order = 1
+    else:
+        lang_Order = 2
+    auto_order = 1 if sub.is_auto else 0
+    return (lang_Order, auto_order, sub.name.lower())
 
 
 def extract_video_metadata(url: str) -> AnalyzeResponse:
@@ -1827,14 +1885,6 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Это видео является запланированной премьерой или будущей трансляцией. Скачивание пока недоступно."
             )
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=(
-                    "YouTube не отдал медиапотоки для IP-адреса сервера (возвращены только превью-раскадровки). "
-                    "Для обхода ограничения датацентра Render укажите COOKIES_TEXT или PROXY_URL в Environment Variables."
-                )
-            )
 
     available_heights = set()
     for f in formats:
@@ -1866,7 +1916,7 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
 
     audio_est_bytes = duration * (160 * 1024 / 8) if duration > 0 else 0
     encoded_url = urllib.parse.quote(url, safe="")
-    has_any_media_formats = len(formats) > 0
+    ffmpeg_ok = bool(get_ffmpeg_path())
 
     server_cap = settings.MAX_VIDEO_HEIGHT or 1080
     if settings.MAX_VIDEO_HEIGHT and settings.MAX_VIDEO_HEIGHT < 1080:
@@ -1889,9 +1939,8 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
     video_options: list[VideoOption] = []
     for q_key, q_label, max_h, is_allowed_by_server in quality_specs:
         effective_cap = max_h or server_cap
-        has_compatible_stream = has_any_media_formats and (
-            (not available_heights) or any(0 < h <= effective_cap for h in available_heights)
-        )
+        # Keep video buttons clickable whenever allowed by server height cap (unless available_heights explicitly shows only > effective_cap)
+        has_compatible_stream = (not available_heights) or any(0 < h <= effective_cap for h in available_heights)
         is_available = bool(is_allowed_by_server and has_compatible_stream)
 
         best_match_size = None
@@ -1924,7 +1973,6 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
 
     mp3_bytes = duration * (320 * 1024 / 8) if duration > 0 else None
     m4a_bytes = duration * (128 * 1024 / 8) if duration > 0 else None
-    ffmpeg_ok = bool(get_ffmpeg_path())
 
     audio_options: list[AudioOption] = [
         AudioOption(
@@ -1934,7 +1982,7 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
             filesize_approx_mb=round(mp3_bytes / (1024 * 1024), 1) if mp3_bytes else None,
             filesize_str=format_bytes(mp3_bytes) if mp3_bytes else "Размер уточняется",
             download_url=f"/api/download/audio?url={encoded_url}&format=mp3",
-            available=bool(ffmpeg_ok and has_any_media_formats),
+            available=ffmpeg_ok,
         ),
         AudioOption(
             format="m4a",
@@ -1943,7 +1991,7 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
             filesize_approx_mb=round(m4a_bytes / (1024 * 1024), 1) if m4a_bytes else None,
             filesize_str=format_bytes(m4a_bytes) if m4a_bytes else "Размер уточняется",
             download_url=f"/api/download/audio?url={encoded_url}&format=m4a",
-            available=has_any_media_formats,
+            available=True,
         ),
     ]
 
@@ -1982,6 +2030,9 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
                 )
             )
 
+    # Sort subtitles so Russian and English are always at the top
+    subtitle_options.sort(key=_subtitle_sort_key)
+
     raw_date = meta.get("upload_date") or ""
     formatted_date = None
     if len(raw_date) == 8:
@@ -2009,8 +2060,7 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
 def download_video_file(url: str, quality: str = "720p") -> Tuple[Path, str, str]:
     """
     Downloads video using yt-dlp with the specified quality and merges with audio into MP4.
-    Includes automatic client fallback if YouTube blocks a specific player client.
-    Returns: (local_file_path, client_download_filename, mime_type)
+    Includes automatic client fallback (cookie-free android_vr/ios first, then cookie-enabled).
     """
     if settings.MAX_VIDEO_HEIGHT and quality == "1080p" and settings.MAX_VIDEO_HEIGHT < 1080:
         raise HTTPException(
@@ -2134,6 +2184,10 @@ def download_audio_file(url: str, audio_format: str = "mp3") -> Tuple[Path, str,
                 "format": "bestaudio[ext=m4a]/bestaudio/best",
                 "outtmpl": out_template,
                 "max_filesize": settings.MAX_FILE_SIZE_MB * 1024 * 1024,
+                "postprocessors": [{
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "m4a",
+                }],
             }
             expected_ext = ".m4a"
             mime_type = "audio/mp4"
@@ -2253,7 +2307,6 @@ def _parse_json3_or_xml_to_vtt_or_srt(raw_content: str) -> Optional[str]:
 def vtt_to_srt(vtt_content: str) -> str:
     """
     Pure-Python converter from WebVTT (.vtt), JSON3, or SRV XML to standard SubRip (.srt).
-    Avoids spawning an FFmpeg child process on Render Free 512MB RAM.
     """
     converted_structured = _parse_json3_or_xml_to_vtt_or_srt(vtt_content)
     if converted_structured:
@@ -2313,9 +2366,7 @@ def vtt_to_srt(vtt_content: str) -> str:
 
 def srt_to_clean_txt(srt_content: str) -> str:
     """
-    Cleans an SRT, WebVTT, JSON3, or SRV XML string into pure legible text:
-    removes WEBVTT headers, numeric indexes, timestamps, HTML tags, entities,
-    and duplicate consecutive lines.
+    Cleans an SRT, WebVTT, JSON3, or SRV XML string into pure legible text.
     """
     converted_structured = _parse_json3_or_xml_to_vtt_or_srt(srt_content)
     if converted_structured:
@@ -2350,8 +2401,7 @@ def srt_to_clean_txt(srt_content: str) -> str:
 
 def _fetch_subtitle_from_info_tracks(info: dict, lang: str) -> Optional[str]:
     """
-    Directly downloads subtitle content using the track URLs already extracted in `info`
-    (from `subtitles` or `automatic_captions`).
+    Directly downloads subtitle content using the track URLs already extracted in `info`.
     """
     manual_subs = info.get("subtitles") or {}
     auto_subs = info.get("automatic_captions") or {}
@@ -2426,7 +2476,6 @@ def download_subtitles_file(url: str, lang: str = "ru", format_type: str = "txt"
     """
     Extracts subtitles (first directly from cached info track URLs, then via yt-dlp fallback).
     Outputs clean .txt (without timestamps/duplicates) or standard .srt.
-    Returns: (local_file_path, client_download_filename, mime_type)
     """
     acquired = _subtitles_semaphore.acquire(blocking=True, timeout=15.0)
     if not acquired:
@@ -2485,7 +2534,7 @@ def download_subtitles_file(url: str, lang: str = "ru", format_type: str = "txt"
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=(
                     f"Субтитры для языка '{lang}' не найдены или YouTube временно ограничил отдачу субтитров "
-                    "для IP-адреса сервера (попробуйте добавить COOKIES_TEXT или выбрать другой язык)."
+                    "для IP-адреса сервера (попробуйте выбрать другой язык)."
                 )
             )
 
@@ -2508,20 +2557,6 @@ def download_subtitles_file(url: str, lang: str = "ru", format_type: str = "txt"
 ```python
 """
 Automated reliability and regression test suite for youtube-analyzer-web.
-Covers Render Free 512MB RAM protections and core functionality:
-- Concurrency serialization (MAX_CONCURRENT_DOWNLOADS=1, 503 rejection)
-- Height capping and elimination of unconstrained /best and /worst, with H.264 priority
-- Explicit Node.js JS runtime configuration in get_ydl_base_opts (required by yt-dlp 2026+)
-- Removal of broken 'tv' client and presence of formats=['missing_pot'] fallback
-- Error message credential sanitization (no sensitive data leaks)
-- Pre-flight check endpoint (/api/check-download) with video accessibility, 1080p cap, live stream & duration guard
-- Two-phase download (/api/prepare-download + /api/stream/{token}) preventing browser 400/404 error screens
-- cgroup/RSS memory and Node.js diagnostics (/api/health)
-- Cyrillic Content-Disposition latin-1 HTTP header safety
-- WebVTT, JSON3, and SRV3 XML subtitle conversion to SRT and clean TXT
-- Storyboard (mhtml) filtering
-- Writable cookiefile copy for read-only mounts (/etc/secrets/cookies.txt)
-- Extended URL validation (query param order, music.youtube.com, shorts, live)
 """
 
 import os
@@ -2533,7 +2568,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-# Ensure project root is on sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -2544,6 +2578,7 @@ from starlette.testclient import TestClient
 from backend.app.config import settings
 from backend.app.limiter import validate_youtube_url
 from backend.app.main import app, make_content_disposition
+from backend.app.schemas import SubtitleOption
 from backend.app.services.cleanup import PROTECTED_FILENAMES
 from backend.app.services.youtube import (
     sanitize_error_message,
@@ -2557,6 +2592,7 @@ from backend.app.services.youtube import (
     _is_storyboard_or_non_media,
     get_ydl_base_opts,
     _CLIENT_PROFILES,
+    _subtitle_sort_key,
 )
 
 
@@ -2622,15 +2658,27 @@ class TestReliabilityAndSafety(unittest.TestCase):
         self.assertIn("js_runtimes", opts)
         self.assertIn("node", opts["js_runtimes"])
 
-    def test_client_profiles_no_tv_and_has_missing_pot(self):
-        """Ensures 'tv' client (which causes 'The page needs to be reloaded') is excluded and missing_pot is present."""
+    def test_client_profiles_cookie_free_first_and_no_tv(self):
+        """Ensures first profile runs with use_cookies=False so android_vr/ios are not skipped by yt-dlp."""
+        self.assertFalse(_CLIENT_PROFILES[0]["use_cookies"])
         has_missing_pot = False
         for prof in _CLIENT_PROFILES:
-            clients = prof.get("player_client", [])
+            y_args = prof.get("youtube_args", {})
+            clients = y_args.get("player_client", [])
             self.assertNotIn("tv", clients)
-            if "missing_pot" in prof.get("formats", []):
+            if "missing_pot" in y_args.get("formats", []):
                 has_missing_pot = True
         self.assertTrue(has_missing_pot)
+
+    def test_subtitle_sorting_ru_en_first(self):
+        """Ensures Russian and English subtitles sort before other languages."""
+        subs = [
+            SubtitleOption(lang="qu", name="Quechua", is_auto=True, txt_url="", srt_url=""),
+            SubtitleOption(lang="en", name="English", is_auto=True, txt_url="", srt_url=""),
+            SubtitleOption(lang="ru", name="Russian", is_auto=True, txt_url="", srt_url=""),
+        ]
+        subs.sort(key=_subtitle_sort_key)
+        self.assertEqual([s.lang for s in subs], ["ru", "en", "qu"])
 
     # 4. Concurrency serialization and 503 rejection
     def test_download_slot_concurrency_serialization(self):
@@ -2832,7 +2880,7 @@ class TestReliabilityAndSafety(unittest.TestCase):
         """Ensures COOKIES_TEXT is normalized and written to a writable file in STORAGE_DIR."""
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
-            with patch.object(settings, "STORAGE_DIR", tmp_path), \
+            with patch.object(settings, "STORAGE_DIR", tmpdir and tmp_path), \
                  patch.object(settings, "COOKIES_FILE", ""), \
                  patch.object(settings, "COOKIES_TEXT", ".youtube.com\\tTRUE\\t/\\tTRUE\\t0\\tSID\\t12345"):
                 cookie_file = _prepare_writable_cookiefile()
@@ -3603,11 +3651,54 @@ body {
 }
 
 .download-stream-btn:disabled {
-  opacity: 0.6;
-  cursor: wait;
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
-/* Subtitles Grid */
+/* Subtitles Toolbar & Grid */
+.subtitles-toolbar {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+
+.subtitles-search-box {
+  flex: 1;
+  min-width: 240px;
+  display: flex;
+  align-items: center;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 0 0.75rem;
+}
+
+.subtitles-search-box:focus-within {
+  border-color: var(--border-focus);
+}
+
+.subtitles-search-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  padding: 0.65rem 0.5rem;
+  outline: none;
+}
+
+.subtitles-search-input::placeholder {
+  color: var(--text-muted);
+}
+
+.subtitles-hint {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-bottom: 0.5rem;
+}
+
 .subtitles-container {
   display: flex;
   flex-direction: column;
@@ -3622,6 +3713,8 @@ body {
   border: 1px solid var(--border-color);
   padding: 0.85rem 1.25rem;
   border-radius: var(--radius-md);
+  gap: 1rem;
+  flex-wrap: wrap;
 }
 
 .subtitle-lang-info {
@@ -3633,6 +3726,7 @@ body {
 .subtitle-actions {
   display: flex;
   gap: 0.5rem;
+  flex-wrap: wrap;
 }
 
 /* Raw Formats Table */
@@ -3867,6 +3961,7 @@ body {
 // Application state
 let currentVideoData = null;
 let currentTranscriptText = "";
+let showAllSubtitles = false;
 
 // DOM Elements
 const serverStatusDot = document.getElementById("serverStatusDot");
@@ -3943,7 +4038,6 @@ async function checkHealth() {
 
 document.addEventListener("DOMContentLoaded", () => {
   checkHealth();
-  // Periodic health check every 4 minutes while tab is open to prevent Render Free spin-down
   setInterval(checkHealth, 240000);
   setupEventListeners();
 });
@@ -3952,7 +4046,6 @@ document.addEventListener("DOMContentLoaded", () => {
  * 2. Event Listeners Setup
  * ------------------------------------------------------------- */
 function setupEventListeners() {
-  // Input clear / paste handlers
   urlInput.addEventListener("input", () => {
     if (urlInput.value.trim().length > 0) {
       clearBtn.classList.remove("hidden");
@@ -3980,10 +4073,8 @@ function setupEventListeners() {
     }
   });
 
-  // Alert close
   alertCloseBtn.addEventListener("click", hideAlert);
 
-  // Form submission
   analyzeForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const url = urlInput.value.trim();
@@ -3991,7 +4082,6 @@ function setupEventListeners() {
     await performAnalysis(url);
   });
 
-  // Tabs switching
   document.querySelectorAll(".tab-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
       document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
@@ -4004,7 +4094,6 @@ function setupEventListeners() {
     });
   });
 
-  // Modal actions
   modalCloseBtn.addEventListener("click", closeModal);
   modalBackdrop.addEventListener("click", closeModal);
   document.addEventListener("keydown", (e) => {
@@ -4020,7 +4109,6 @@ function setupEventListeners() {
     }
   });
 
-  // Copy video URL button
   copyUrlBtn.addEventListener("click", () => {
     if (currentVideoData && currentVideoData.original_url) {
       navigator.clipboard.writeText(currentVideoData.original_url);
@@ -4059,6 +4147,7 @@ async function performAnalysis(url) {
 
     const data = await res.json();
     currentVideoData = data;
+    showAllSubtitles = false;
     renderResults(data);
     checkHealth();
   } catch (err) {
@@ -4073,7 +4162,6 @@ async function performAnalysis(url) {
  * 4. Render UI Components
  * ------------------------------------------------------------- */
 function renderResults(data) {
-  // Populate video details
   videoThumb.src = data.thumbnail || "";
   videoThumb.alt = data.title;
   videoDuration.textContent = data.duration_str;
@@ -4095,13 +4183,11 @@ function renderResults(data) {
   originalVideoLink.href = data.original_url;
   videoDescription.textContent = data.description || "Описание отсутствует.";
 
-  // Render tabs
   renderVideoOptions(data.video_options);
   renderAudioOptions(data.audio_options);
   renderSubtitles(data.subtitle_options);
   renderFormatsTable(data.all_formats);
 
-  // Reveal result
   resultSection.classList.remove("hidden");
   resultSection.scrollIntoView({ behavior: "smooth", block: "start" });
 }
@@ -4156,7 +4242,7 @@ function renderAudioOptions(options) {
       </div>
       <div class="option-title">${escapeHtml(opt.label)}</div>
       <button type="button" class="download-stream-btn" data-url="${escapeHtml(opt.download_url)}" ${!isAvailable ? "disabled" : ""}>
-        <span>${isAvailable ? "Скачать " + escapeHtml(opt.format.toUpperCase()) : "Требуется FFmpeg"}</span>
+        <span>${isAvailable ? "Скачать " + escapeHtml(opt.format.toUpperCase()) : "Недоступно"}</span>
       </button>
     `;
 
@@ -4168,6 +4254,11 @@ function renderAudioOptions(options) {
 
     audioOptionsGrid.appendChild(card);
   });
+}
+
+function isPrimaryRuEnLang(lang) {
+  const l = (lang || "").toLowerCase();
+  return l === "ru" || l.startsWith("ru-") || l.startsWith("ru_") || l === "en" || l.startsWith("en-") || l.startsWith("en_");
 }
 
 function renderSubtitles(subtitles) {
@@ -4184,41 +4275,124 @@ function renderSubtitles(subtitles) {
     return;
   }
 
-  subtitles.forEach((sub) => {
-    const item = document.createElement("div");
-    item.className = "subtitle-item";
-    item.innerHTML = `
-      <div class="subtitle-lang-info">
-        <span class="option-badge">${escapeHtml(sub.lang)}</span>
-        <span><strong>${escapeHtml(sub.name)}</strong></span>
-      </div>
-      <div class="subtitle-actions">
-        <button type="button" class="btn btn-secondary preview-sub-btn">
-          <span>Предпросмотр</span>
-        </button>
-        <button type="button" class="btn btn-primary download-txt-btn">
-          <span>Скачать .txt</span>
-        </button>
-        <button type="button" class="btn btn-secondary download-srt-btn">
-          <span>Скачать .srt</span>
-        </button>
-      </div>
-    `;
+  const primarySubs = subtitles.filter((s) => isPrimaryRuEnLang(s.lang));
+  const otherSubsCount = subtitles.length - primarySubs.length;
 
-    item.querySelector(".preview-sub-btn").addEventListener("click", () => {
-      openTranscriptModal(sub);
+  // Toolbar with search input for finding other languages quickly without scrolling 150 items
+  const toolbar = document.createElement("div");
+  toolbar.className = "subtitles-toolbar";
+  toolbar.innerHTML = `
+    <div class="subtitles-search-box">
+      <span class="search-icon">🔍</span>
+      <input
+        type="text"
+        id="subSearchInput"
+        class="subtitles-search-input"
+        placeholder="Поиск языка субтитров (например: Deutsch, Español, Français, de, es, ja)..."
+        autocomplete="off"
+      >
+    </div>
+    ${
+      otherSubsCount > 0
+        ? `<button type="button" id="toggleAllSubsBtn" class="btn btn-secondary">
+             <span>Показать все языки (${subtitles.length})</span>
+           </button>`
+        : ""
+    }
+  `;
+  subtitlesContent.appendChild(toolbar);
+
+  const hint = document.createElement("div");
+  hint.className = "subtitles-hint";
+  subtitlesContent.appendChild(hint);
+
+  const listWrapper = document.createElement("div");
+  listWrapper.className = "subtitles-container";
+  subtitlesContent.appendChild(listWrapper);
+
+  const searchInput = toolbar.querySelector("#subSearchInput");
+  const toggleBtn = toolbar.querySelector("#toggleAllSubsBtn");
+
+  function updateSubtitlesList() {
+    const query = (searchInput.value || "").trim().toLowerCase();
+    listWrapper.innerHTML = "";
+
+    let filtered = [];
+    if (query.length > 0) {
+      filtered = subtitles.filter(
+        (s) =>
+          (s.lang && s.lang.toLowerCase().includes(query)) ||
+          (s.name && s.name.toLowerCase().includes(query))
+      );
+      hint.textContent = `Найдено языков по запросу «${query}»: ${filtered.length}`;
+    } else if (showAllSubtitles || primarySubs.length === 0) {
+      filtered = subtitles;
+      hint.textContent = `Показаны все доступные языки (${subtitles.length})`;
+    } else {
+      filtered = primarySubs;
+      hint.textContent =
+        otherSubsCount > 0
+          ? `По умолчанию показаны только Русский и Английский (${primarySubs.length}). Остальные ${otherSubsCount} яз. доступны через поиск выше.`
+          : `Доступные субтитры (${primarySubs.length})`;
+    }
+
+    if (toggleBtn) {
+      toggleBtn.querySelector("span").textContent = showAllSubtitles
+        ? "Оставить только RU / EN"
+        : `Показать все языки (${subtitles.length})`;
+    }
+
+    if (filtered.length === 0) {
+      listWrapper.innerHTML = `<p class="text-muted">Язык по запросу «${escapeHtml(query)}» не найден.</p>`;
+      return;
+    }
+
+    filtered.forEach((sub) => {
+      const item = document.createElement("div");
+      item.className = "subtitle-item";
+      item.innerHTML = `
+        <div class="subtitle-lang-info">
+          <span class="option-badge">${escapeHtml(sub.lang)}</span>
+          <span><strong>${escapeHtml(sub.name)}</strong></span>
+        </div>
+        <div class="subtitle-actions">
+          <button type="button" class="btn btn-secondary preview-sub-btn">
+            <span>Предпросмотр</span>
+          </button>
+          <button type="button" class="btn btn-primary download-txt-btn">
+            <span>Скачать .txt</span>
+          </button>
+          <button type="button" class="btn btn-secondary download-srt-btn">
+            <span>Скачать .srt</span>
+          </button>
+        </div>
+      `;
+
+      item.querySelector(".preview-sub-btn").addEventListener("click", () => {
+        openTranscriptModal(sub);
+      });
+
+      item.querySelector(".download-txt-btn").addEventListener("click", function () {
+        triggerDownload(this, sub.txt_url);
+      });
+
+      item.querySelector(".download-srt-btn").addEventListener("click", function () {
+        triggerDownload(this, sub.srt_url);
+      });
+
+      listWrapper.appendChild(item);
     });
+  }
 
-    item.querySelector(".download-txt-btn").addEventListener("click", function () {
-      triggerDownload(this, sub.txt_url);
+  searchInput.addEventListener("input", updateSubtitlesList);
+  if (toggleBtn) {
+    toggleBtn.addEventListener("click", () => {
+      showAllSubtitles = !showAllSubtitles;
+      updateSubtitlesList();
     });
+  }
 
-    item.querySelector(".download-srt-btn").addEventListener("click", function () {
-      triggerDownload(this, sub.srt_url);
-    });
-
-    subtitlesContent.appendChild(item);
-  });
+  updateSubtitlesList();
 }
 
 function renderFormatsTable(formats) {
@@ -4257,7 +4431,6 @@ async function triggerDownload(btn, url) {
   `;
 
   try {
-    // 1. Parse target download URL parameters
     const urlObj = new URL(url, window.location.origin);
     const ytUrl = urlObj.searchParams.get("url");
     let kind = "video";
@@ -4272,8 +4445,6 @@ async function triggerDownload(btn, url) {
     if (format) prepParams.set("format", format);
     if (lang) prepParams.set("lang", lang);
 
-    // 2. Prepare file on server via fetch() so any YouTube/yt-dlp errors are caught
-    // cleanly as JSON and shown in the UI AlertBox instead of crashing Firefox into a 400/404 page.
     const prepRes = await fetch("/api/prepare-download?" + prepParams.toString());
     if (!prepRes.ok) {
       let errorDetail = "Ошибка при подготовке файла на сервере";
@@ -4291,8 +4462,6 @@ async function triggerDownload(btn, url) {
     const streamUrl = prepData.stream_url;
     const downloadFilename = prepData.filename || "download";
 
-    // 3. File is guaranteed ready on disk: trigger native browser download via <a href="/api/stream/{token}">.
-    // Avoids buffering large files in browser JS heap while guaranteeing zero 400/404 navigation errors.
     showToast("Файл готов! Начинается сохранение в браузере...");
     const a = document.createElement("a");
     a.href = streamUrl;

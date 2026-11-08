@@ -540,11 +540,54 @@ body {
 }
 
 .download-stream-btn:disabled {
-  opacity: 0.6;
-  cursor: wait;
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
-/* Subtitles Grid */
+/* Subtitles Toolbar & Grid */
+.subtitles-toolbar {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+
+.subtitles-search-box {
+  flex: 1;
+  min-width: 240px;
+  display: flex;
+  align-items: center;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 0 0.75rem;
+}
+
+.subtitles-search-box:focus-within {
+  border-color: var(--border-focus);
+}
+
+.subtitles-search-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  padding: 0.65rem 0.5rem;
+  outline: none;
+}
+
+.subtitles-search-input::placeholder {
+  color: var(--text-muted);
+}
+
+.subtitles-hint {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-bottom: 0.5rem;
+}
+
 .subtitles-container {
   display: flex;
   flex-direction: column;
@@ -559,6 +602,8 @@ body {
   border: 1px solid var(--border-color);
   padding: 0.85rem 1.25rem;
   border-radius: var(--radius-md);
+  gap: 1rem;
+  flex-wrap: wrap;
 }
 
 .subtitle-lang-info {
@@ -570,6 +615,7 @@ body {
 .subtitle-actions {
   display: flex;
   gap: 0.5rem;
+  flex-wrap: wrap;
 }
 
 /* Raw Formats Table */

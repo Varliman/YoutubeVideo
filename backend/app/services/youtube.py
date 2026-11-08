@@ -133,51 +133,93 @@ def _has_playable_formats(info: Optional[dict]) -> bool:
     return any(not _is_storyboard_or_non_media(f) for f in formats)
 
 
-# Client fallback profiles for yt-dlp 2026+ (avoiding broken 'tv' client that causes 'The page needs to be reloaded')
+# Client fallback profiles for yt-dlp 2026+
+# CRITICAL FIX: In yt-dlp 2026+, passing cookies causes yt-dlp to SKIP 'android_vr', 'ios', and 'android'
+# ("WARNING: Skipping client 'android_vr' since it does not support cookies"), and logged-in 'web' clients
+# are frequently forced into YouTube's SABR-only experiment (returning 0 downloadable URLs!).
+# Therefore, we try cookie-free mobile/VR clients FIRST, then cookie-enabled web_safari/web_embedded/mweb!
 _CLIENT_PROFILES: list[dict] = [
-    # Profile 1: Default clients + web_embedded + mweb + android_vr with Node.js EJS solver
+    # Profile 1: Cookie-free Android VR + iOS + MWeb + Web Embedded (avoids SABR & cookie-skipping!)
     {
-        "player_client": ["default", "web_embedded", "mweb", "android_vr"],
+        "use_cookies": False,
+        "use_proxy": True,
+        "youtube_args": {
+            "player_client": ["android_vr", "ios", "web_embedded", "mweb"],
+            "formats": ["missing_pot"],
+        },
     },
-    # Profile 2: Enable formats=missing_pot so yt-dlp does NOT skip streams when PO Token is absent on datacenter IPs
+    # Profile 2: Cookie-enabled Web Safari + Web Embedded + MWeb + Web (for 18+ or cookie-gated IPs)
     {
-        "player_client": ["default", "ios", "mweb", "android_vr", "web_embedded"],
-        "formats": ["missing_pot"],
+        "use_cookies": True,
+        "use_proxy": True,
+        "youtube_args": {
+            "player_client": ["web_safari", "web_embedded", "mweb", "web"],
+            "formats": ["missing_pot"],
+        },
     },
-    # Profile 3: Mobile/VR clients with missing_pot + duplicate formats unlocked
+    # Profile 3: Cookie-free Android + iOS + MWeb with duplicate & missing_pot unlocked
     {
-        "player_client": ["android_vr", "mweb", "ios", "web_safari"],
-        "formats": ["missing_pot", "duplicate"],
+        "use_cookies": False,
+        "use_proxy": True,
+        "youtube_args": {
+            "player_client": ["android", "android_vr", "ios", "mweb", "web_safari"],
+            "formats": ["missing_pot", "duplicate"],
+        },
+    },
+    # Profile 4: Direct connection without proxy (in case user's PROXY_URL blocks googlevideo streams)
+    {
+        "use_cookies": False,
+        "use_proxy": False,
+        "youtube_args": {
+            "player_client": ["android_vr", "ios", "web_embedded", "mweb"],
+            "formats": ["missing_pot"],
+        },
     },
 ]
 
 
 def _extract_with_client_fallbacks(url: str, base_extra_opts: dict, download: bool = False) -> dict:
     """
-    Executes yt-dlp extract_info with automatic fallback across client profiles.
-    If download=False (metadata/analyze mode) and all profiles fail to unlock playable streams,
-    falls back to ignore_no_formats_error=True so metadata and subtitles still work.
+    Executes yt-dlp extract_info with automatic fallback across client profiles
+    (both without cookies to unlock android_vr/ios and with cookies for 18+/authenticated streams).
     """
+    has_cookies_configured = bool(
+        settings.COOKIES_FILE or settings.COOKIES_TEXT or settings.COOKIES_FROM_BROWSER
+    )
+    has_proxy_configured = bool(settings.PROXY_URL)
     last_exc = None
-    for idx, youtube_args in enumerate(_CLIENT_PROFILES):
+
+    for idx, profile in enumerate(_CLIENT_PROFILES):
+        use_cookies = profile.get("use_cookies", True)
+        use_proxy = profile.get("use_proxy", True)
+
+        # Skip cookie profile if no cookies are configured
+        if use_cookies and not has_cookies_configured and idx == 1:
+            continue
+        # Skip non-proxy fallback if no proxy was configured in the first place
+        if not use_proxy and not has_proxy_configured:
+            continue
+
         extra = dict(base_extra_opts)
-        extra["extractor_args"] = {"youtube": dict(youtube_args)}
-        opts = get_ydl_base_opts(extra)
+        extra["extractor_args"] = {"youtube": dict(profile["youtube_args"])}
+        opts = get_ydl_base_opts(extra, use_cookies=use_cookies, use_proxy=use_proxy)
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=download)
-                if download or _has_playable_formats(info) or (info and info.get("formats")):
+                if download or _has_playable_formats(info):
                     return info
         except Exception as e:
             last_exc = e
             err_str = str(e)
-            logger.warning(f"yt-dlp attempt {idx + 1} failed for {url}: {sanitize_error_message(e)}")
-            if "Private video" in err_str or "Video unavailable" in err_str or "File is larger than max-filesize" in err_str:
+            logger.warning(
+                f"yt-dlp attempt {idx + 1} (cookies={use_cookies}, proxy={use_proxy}) failed for {url}: "
+                f"{sanitize_error_message(e)}"
+            )
+            if "Video unavailable" in err_str or "File is larger than max-filesize" in err_str:
                 raise e
             continue
 
-    # If we are only extracting metadata (e.g. /api/analyze or subtitles) and formats were blocked,
-    # extract with ignore_no_formats_error=True so video info & transcripts remain accessible!
+    # Final fallback for metadata/subtitles if all video stream profiles were blocked
     if not download:
         try:
             fallback_extra = dict(base_extra_opts)
@@ -188,7 +230,7 @@ def _extract_with_client_fallbacks(url: str, base_extra_opts: dict, download: bo
                     "formats": ["missing_pot"],
                 }
             }
-            opts = get_ydl_base_opts(fallback_extra)
+            opts = get_ydl_base_opts(fallback_extra, use_cookies=has_cookies_configured, use_proxy=has_proxy_configured)
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 if info:
@@ -204,7 +246,7 @@ def _extract_with_client_fallbacks(url: str, base_extra_opts: dict, download: bo
 def get_cached_or_extract_info(url: str, extra_opts: Optional[dict] = None) -> dict:
     """
     Retrieves video info dictionary from in-memory cache or extracts via yt-dlp.
-    Cached for 180 seconds to eliminate redundant network extraction between analyze, pre-check, and download.
+    Only caches for the full TTL if playable media formats were found.
     """
     now = time.time()
     with _INFO_CACHE_LOCK:
@@ -213,7 +255,7 @@ def get_cached_or_extract_info(url: str, extra_opts: Optional[dict] = None) -> d
             _INFO_CACHE.pop(k, None)
 
         cached = _INFO_CACHE.get(url)
-        if cached and (now - cached[0] < _CACHE_TTL_SECONDS):
+        if cached and (now - cached[0] < _CACHE_TTL_SECONDS) and _has_playable_formats(cached[1]):
             return cached[1]
 
     req_opts = {
@@ -290,10 +332,6 @@ def check_download_feasibility(
 ) -> Tuple[bool, str, Optional[str]]:
     """
     Pre-flight check before initiating heavy file downloads.
-    1. Checks server limits (FFmpeg, active download semaphore, max height cap).
-    2. Checks video accessibility (extracts/uses cached metadata, detects private/429/403/live/duration).
-    3. Checks format/quality availability (verifies playable video height <= requested quality).
-    Returns: (is_ok: bool, message: str, title: Optional[str])
     """
     if kind == "video" and quality == "1080p" and settings.MAX_VIDEO_HEIGHT and settings.MAX_VIDEO_HEIGHT < 1080:
         return (
@@ -351,7 +389,7 @@ def check_download_feasibility(
         want = min(target_h, cap)
         formats = [f for f in (info.get("formats") or []) if not _is_storyboard_or_non_media(f)]
         heights = [f.get("height") or 0 for f in formats]
-        if not any(0 < h <= want for h in heights):
+        if heights and not any(0 < h <= want for h in heights):
             return False, f"Видео недоступно в качестве ≤{want}p.", title
 
     elif kind == "transcript" and lang:
@@ -448,8 +486,6 @@ def format_duration(seconds: Optional[int | float]) -> str:
 def _prepare_writable_cookiefile() -> Optional[str]:
     """
     Ensures yt-dlp always receives a WRITABLE cookiefile path inside STORAGE_DIR.
-    Prevents 'OSError: [Errno 30] Read-only file system' when COOKIES_FILE is mounted
-    read-only (e.g. Render Secret Files at /etc/secrets/cookies.txt or Docker :ro volumes).
     """
     runtime_cookies = settings.STORAGE_DIR / "runtime_cookies.txt"
 
@@ -481,13 +517,16 @@ def _prepare_writable_cookiefile() -> Optional[str]:
     return None
 
 
-def get_ydl_base_opts(extra_opts: Optional[dict] = None) -> dict:
+def get_ydl_base_opts(
+    extra_opts: Optional[dict] = None,
+    use_cookies: bool = True,
+    use_proxy: bool = True,
+) -> dict:
     """
     Constructs base yt-dlp options including explicit Node.js runtime activation
-    (CRITICAL for yt-dlp 2026+ which only enables deno by default!), proxy, cookies,
-    single-thread FFmpeg, and timeouts.
+    (CRITICAL for yt-dlp 2026+ which only enables deno by default!), optional proxy/cookies
+    toggling (so android_vr and ios clients are not skipped due to cookies!), single-thread FFmpeg, and timeouts.
     """
-    # Configure JS runtimes explicitly: yt-dlp 2026+ only checks deno by default unless node is passed!
     js_runtimes = {}
     node_bin = shutil.which("node") or shutil.which("nodejs")
     if node_bin:
@@ -519,14 +558,15 @@ def get_ydl_base_opts(extra_opts: Optional[dict] = None) -> dict:
     if getattr(settings, "FORCE_IPV4", True):
         opts["source_address"] = "0.0.0.0"
 
-    if settings.PROXY_URL:
+    if use_proxy and settings.PROXY_URL:
         opts["proxy"] = settings.PROXY_URL
 
-    writable_cookiefile = _prepare_writable_cookiefile()
-    if writable_cookiefile:
-        opts["cookiefile"] = writable_cookiefile
-    elif settings.COOKIES_FROM_BROWSER:
-        opts["cookiesfrombrowser"] = (settings.COOKIES_FROM_BROWSER, None, None, None)
+    if use_cookies:
+        writable_cookiefile = _prepare_writable_cookiefile()
+        if writable_cookiefile:
+            opts["cookiefile"] = writable_cookiefile
+        elif settings.COOKIES_FROM_BROWSER:
+            opts["cookiesfrombrowser"] = (settings.COOKIES_FROM_BROWSER, None, None, None)
 
     ffmpeg_bin = get_ffmpeg_path()
     if ffmpeg_bin:
@@ -547,7 +587,7 @@ def _raise_for_ydl_error(e: Exception, context_action: str = "обработке
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=(
                 "YouTube временно ограничил запросы с IP-адреса сервера (HTTP 429 Too Many Requests). "
-                "Для стабильной работы на облачном хостинге Render укажите COOKIES_TEXT или PROXY_URL в Environment Variables."
+                "Проверьте работоспособность вашего PROXY_URL или обновите COOKIES_TEXT."
             )
         )
     elif (
@@ -561,9 +601,9 @@ def _raise_for_ydl_error(e: Exception, context_action: str = "обработке
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
-                "YouTube запросил проверку авторизации или защиту от ботов (HTTP 403 / 'Sign in to confirm you’re not a bot') "
-                "для IP-адреса датацентра Render. Чтобы скачивать любые видео без ограничений, добавьте переменную "
-                "COOKIES_TEXT (содержимое файла cookies.txt из браузера) или PROXY_URL в настройках Environment на Render."
+                "YouTube отклонил доступ к медиапотоку (HTTP 403 / защита от ботов). "
+                "Если у вас указаны старые COOKIES_TEXT, попробуйте обновить их из режима Инкогнито браузера "
+                "или временно очистить COOKIES_TEXT, чтобы сервер использовал мобильные клиенты android_vr/ios."
             )
         )
     elif "requested format is not available" in lower_msg:
@@ -571,8 +611,8 @@ def _raise_for_ydl_error(e: Exception, context_action: str = "обработке
             status_code=HTTP_422_STATUS,
             detail=(
                 f"Видеопоток в выбранном качестве (лимит ≤{settings.MAX_VIDEO_HEIGHT}p) недоступен. "
-                "YouTube заблокировал отдачу прямых видеопотоков для IP-адреса датацентра Render — "
-                "добавьте COOKIES_TEXT (куки из браузера) или PROXY_URL в настройки Environment на Render."
+                "Если в настройках Render указан COOKIES_TEXT, аккаунт мог попасть под эксперимент SABR от YouTube — "
+                "попробуйте удалить или обновить COOKIES_TEXT или проверить PROXY_URL."
             )
         )
     elif "file is larger than max-filesize" in lower_msg:
@@ -590,6 +630,22 @@ def _raise_for_ydl_error(e: Exception, context_action: str = "обработке
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Ошибка yt-dlp при {context_action}: {error_msg}"
         )
+
+
+def _subtitle_sort_key(sub: SubtitleOption) -> Tuple[int, int, str]:
+    """
+    Sorts subtitle options so Russian ('ru', 'ru-*') and English ('en', 'en-*') appear at the very top,
+    followed by manual subtitles, then alphabetical order.
+    """
+    lang_low = sub.lang.lower()
+    if lang_low == "ru" or lang_low.startswith("ru-") or lang_low.startswith("ru_"):
+        lang_Order = 0
+    elif lang_low == "en" or lang_low.startswith("en-") or lang_low.startswith("en_"):
+        lang_Order = 1
+    else:
+        lang_Order = 2
+    auto_order = 1 if sub.is_auto else 0
+    return (lang_Order, auto_order, sub.name.lower())
 
 
 def extract_video_metadata(url: str) -> AnalyzeResponse:
@@ -632,14 +688,6 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Это видео является запланированной премьерой или будущей трансляцией. Скачивание пока недоступно."
             )
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=(
-                    "YouTube не отдал медиапотоки для IP-адреса сервера (возвращены только превью-раскадровки). "
-                    "Для обхода ограничения датацентра Render укажите COOKIES_TEXT или PROXY_URL в Environment Variables."
-                )
-            )
 
     available_heights = set()
     for f in formats:
@@ -671,7 +719,7 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
 
     audio_est_bytes = duration * (160 * 1024 / 8) if duration > 0 else 0
     encoded_url = urllib.parse.quote(url, safe="")
-    has_any_media_formats = len(formats) > 0
+    ffmpeg_ok = bool(get_ffmpeg_path())
 
     server_cap = settings.MAX_VIDEO_HEIGHT or 1080
     if settings.MAX_VIDEO_HEIGHT and settings.MAX_VIDEO_HEIGHT < 1080:
@@ -694,9 +742,8 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
     video_options: list[VideoOption] = []
     for q_key, q_label, max_h, is_allowed_by_server in quality_specs:
         effective_cap = max_h or server_cap
-        has_compatible_stream = has_any_media_formats and (
-            (not available_heights) or any(0 < h <= effective_cap for h in available_heights)
-        )
+        # Keep video buttons clickable whenever allowed by server height cap (unless available_heights explicitly shows only > effective_cap)
+        has_compatible_stream = (not available_heights) or any(0 < h <= effective_cap for h in available_heights)
         is_available = bool(is_allowed_by_server and has_compatible_stream)
 
         best_match_size = None
@@ -729,7 +776,6 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
 
     mp3_bytes = duration * (320 * 1024 / 8) if duration > 0 else None
     m4a_bytes = duration * (128 * 1024 / 8) if duration > 0 else None
-    ffmpeg_ok = bool(get_ffmpeg_path())
 
     audio_options: list[AudioOption] = [
         AudioOption(
@@ -739,7 +785,7 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
             filesize_approx_mb=round(mp3_bytes / (1024 * 1024), 1) if mp3_bytes else None,
             filesize_str=format_bytes(mp3_bytes) if mp3_bytes else "Размер уточняется",
             download_url=f"/api/download/audio?url={encoded_url}&format=mp3",
-            available=bool(ffmpeg_ok and has_any_media_formats),
+            available=ffmpeg_ok,
         ),
         AudioOption(
             format="m4a",
@@ -748,7 +794,7 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
             filesize_approx_mb=round(m4a_bytes / (1024 * 1024), 1) if m4a_bytes else None,
             filesize_str=format_bytes(m4a_bytes) if m4a_bytes else "Размер уточняется",
             download_url=f"/api/download/audio?url={encoded_url}&format=m4a",
-            available=has_any_media_formats,
+            available=True,
         ),
     ]
 
@@ -787,6 +833,9 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
                 )
             )
 
+    # Sort subtitles so Russian and English are always at the top
+    subtitle_options.sort(key=_subtitle_sort_key)
+
     raw_date = meta.get("upload_date") or ""
     formatted_date = None
     if len(raw_date) == 8:
@@ -814,8 +863,7 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
 def download_video_file(url: str, quality: str = "720p") -> Tuple[Path, str, str]:
     """
     Downloads video using yt-dlp with the specified quality and merges with audio into MP4.
-    Includes automatic client fallback if YouTube blocks a specific player client.
-    Returns: (local_file_path, client_download_filename, mime_type)
+    Includes automatic client fallback (cookie-free android_vr/ios first, then cookie-enabled).
     """
     if settings.MAX_VIDEO_HEIGHT and quality == "1080p" and settings.MAX_VIDEO_HEIGHT < 1080:
         raise HTTPException(
@@ -939,6 +987,10 @@ def download_audio_file(url: str, audio_format: str = "mp3") -> Tuple[Path, str,
                 "format": "bestaudio[ext=m4a]/bestaudio/best",
                 "outtmpl": out_template,
                 "max_filesize": settings.MAX_FILE_SIZE_MB * 1024 * 1024,
+                "postprocessors": [{
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "m4a",
+                }],
             }
             expected_ext = ".m4a"
             mime_type = "audio/mp4"
@@ -1058,7 +1110,6 @@ def _parse_json3_or_xml_to_vtt_or_srt(raw_content: str) -> Optional[str]:
 def vtt_to_srt(vtt_content: str) -> str:
     """
     Pure-Python converter from WebVTT (.vtt), JSON3, or SRV XML to standard SubRip (.srt).
-    Avoids spawning an FFmpeg child process on Render Free 512MB RAM.
     """
     converted_structured = _parse_json3_or_xml_to_vtt_or_srt(vtt_content)
     if converted_structured:
@@ -1118,9 +1169,7 @@ def vtt_to_srt(vtt_content: str) -> str:
 
 def srt_to_clean_txt(srt_content: str) -> str:
     """
-    Cleans an SRT, WebVTT, JSON3, or SRV XML string into pure legible text:
-    removes WEBVTT headers, numeric indexes, timestamps, HTML tags, entities,
-    and duplicate consecutive lines.
+    Cleans an SRT, WebVTT, JSON3, or SRV XML string into pure legible text.
     """
     converted_structured = _parse_json3_or_xml_to_vtt_or_srt(srt_content)
     if converted_structured:
@@ -1155,8 +1204,7 @@ def srt_to_clean_txt(srt_content: str) -> str:
 
 def _fetch_subtitle_from_info_tracks(info: dict, lang: str) -> Optional[str]:
     """
-    Directly downloads subtitle content using the track URLs already extracted in `info`
-    (from `subtitles` or `automatic_captions`).
+    Directly downloads subtitle content using the track URLs already extracted in `info`.
     """
     manual_subs = info.get("subtitles") or {}
     auto_subs = info.get("automatic_captions") or {}
@@ -1231,7 +1279,6 @@ def download_subtitles_file(url: str, lang: str = "ru", format_type: str = "txt"
     """
     Extracts subtitles (first directly from cached info track URLs, then via yt-dlp fallback).
     Outputs clean .txt (without timestamps/duplicates) or standard .srt.
-    Returns: (local_file_path, client_download_filename, mime_type)
     """
     acquired = _subtitles_semaphore.acquire(blocking=True, timeout=15.0)
     if not acquired:
@@ -1290,7 +1337,7 @@ def download_subtitles_file(url: str, lang: str = "ru", format_type: str = "txt"
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=(
                     f"Субтитры для языка '{lang}' не найдены или YouTube временно ограничил отдачу субтитров "
-                    "для IP-адреса сервера (попробуйте добавить COOKIES_TEXT или выбрать другой язык)."
+                    "для IP-адреса сервера (попробуйте выбрать другой язык)."
                 )
             )
 

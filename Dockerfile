@@ -21,9 +21,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install lightweight Rust PO-Token provider binary (bgutil-pot) for bypassing YouTube datacenter blocks
-RUN curl -fsSL https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/latest/download/bgutil-pot-linux-x86_64 \
-    -o /usr/local/bin/bgutil-pot && chmod +x /usr/local/bin/bgutil-pot || true
+# Install lightweight Rust PO-Token provider binary (bgutil-pot) + matching yt-dlp plugin zip
+RUN mkdir -p /etc/yt-dlp/plugins && \
+    curl -fsSL https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/latest/download/bgutil-pot-linux-x86_64 \
+    -o /usr/local/bin/bgutil-pot && chmod +x /usr/local/bin/bgutil-pot && \
+    curl -fsSL https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/latest/download/bgutil-ytdlp-pot-provider-rs.zip \
+    -o /etc/yt-dlp/plugins/bgutil-ytdlp-pot-provider-rs.zip || true
 
 # Create non-root application user for container security
 RUN groupadd -r appgroup && useradd -r -g appgroup -d /app -s /sbin/nologin appuser
