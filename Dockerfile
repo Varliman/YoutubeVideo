@@ -10,9 +10,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PORT=8000 \
     HOST=0.0.0.0
 
-# Install system dependencies: ffmpeg for media merging/audio conversion, curl for healthchecks
+# Install system dependencies:
+# - ffmpeg: media merging and audio conversion
+# - nodejs: REQUIRED by yt-dlp 2026+ (yt-dlp-ejs) to solve YouTube n-sig / signatureCipher challenges
+# - curl & ca-certificates: container healthchecks and HTTPS
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    nodejs \
     curl \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*

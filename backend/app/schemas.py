@@ -79,10 +79,19 @@ class CheckDownloadResponse(BaseModel):
     message: Optional[str] = None
 
 
+class PrepareDownloadResponse(BaseModel):
+    """Response returned when a media/subtitle file is prepared and ready to stream."""
+    ok: bool
+    token: str
+    filename: str
+    stream_url: str
+
+
 class HealthResponse(BaseModel):
     """Health check response with Render Free 512MB RAM diagnostics."""
     status: str
     ffmpeg_available: bool
+    nodejs_available: bool = False
     proxy_configured: bool
     cookies_configured: bool
     storage_dir: str

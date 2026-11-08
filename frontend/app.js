@@ -66,7 +66,9 @@ async function checkHealth() {
     const data = await res.json();
     serverStatusDot.className = "status-indicator online";
     let statusMsg = "Сервер онлайн";
-    if (data.ffmpeg_available) statusMsg += " (FFmpeg)";
+    if (data.ffmpeg_available) statusMsg += " (FFmpeg";
+    if (data.nodejs_available && data.ffmpeg_available) statusMsg += "+JS)";
+    else if (data.ffmpeg_available) statusMsg += ")";
     if (data.cookies_configured) statusMsg += " • Cookies";
     if (data.proxy_configured) statusMsg += " • Прокси";
     if (data.rss_mb > 0) statusMsg += ` • RAM: ${data.rss_mb} МБ`;
@@ -381,75 +383,64 @@ function renderFormatsTable(formats) {
 }
 
 /* -------------------------------------------------------------
- * 5. Download Streaming Handler
+ * 5. Two-Phase Download Streaming Handler (Zero Browser Error Pages)
  * ------------------------------------------------------------- */
 async function triggerDownload(btn, url) {
+  hideAlert();
   const originalHtml = btn.innerHTML;
   btn.disabled = true;
   btn.innerHTML = `
     <div class="spinner" style="width:14px;height:14px;"></div>
-    <span>Проверка...</span>
+    <span>Готовим файл...</span>
   `;
 
   try {
-    // 1. Parse target download URL parameters for pre-flight check
+    // 1. Parse target download URL parameters
     const urlObj = new URL(url, window.location.origin);
     const ytUrl = urlObj.searchParams.get("url");
     let kind = "video";
     if (url.includes("/api/download/audio")) kind = "audio";
     else if (url.includes("/api/download/transcript")) kind = "transcript";
 
-    const checkParams = new URLSearchParams({ url: ytUrl, kind });
+    const prepParams = new URLSearchParams({ url: ytUrl, kind });
     const quality = urlObj.searchParams.get("quality");
     const format = urlObj.searchParams.get("format");
     const lang = urlObj.searchParams.get("lang");
-    if (quality) checkParams.set("quality", quality);
-    if (format) checkParams.set("format", format);
-    if (lang) checkParams.set("lang", lang);
+    if (quality) prepParams.set("quality", quality);
+    if (format) prepParams.set("format", format);
+    if (lang) prepParams.set("lang", lang);
 
-    // 2. Perform pre-check on backend (concurrency, limits, ffmpeg, video availability)
-    const checkRes = await fetch("/api/check-download?" + checkParams.toString());
-    if (!checkRes.ok) {
-      let errorDetail = "Ошибка при проверке возможности скачивания";
+    // 2. Prepare file on server via fetch() so any YouTube/yt-dlp errors are caught
+    // cleanly as JSON and shown in the UI AlertBox instead of crashing Firefox into a 400/404 page.
+    const prepRes = await fetch("/api/prepare-download?" + prepParams.toString());
+    if (!prepRes.ok) {
+      let errorDetail = "Ошибка при подготовке файла на сервере";
       try {
-        const errJson = await checkRes.json();
+        const errJson = await prepRes.json();
         errorDetail = errJson.detail || errorDetail;
       } catch (e) {
-        errorDetail = `Ошибка сервера (${checkRes.status})`;
+        errorDetail = `Ошибка сервера (${prepRes.status})`;
       }
-      showAlert("Невозможно начать скачивание", errorDetail);
+      showAlert("Не удалось скачать файл", errorDetail);
       return;
     }
 
-    let downloadFilename = "download";
-    try {
-      const checkData = await checkRes.json();
-      if (checkData.title) {
-        const ext =
-          kind === "audio"
-            ? format || "mp3"
-            : kind === "transcript"
-              ? lang
-                ? `${lang}.${format || "txt"}`
-                : format || "txt"
-              : "mp4";
-        downloadFilename = `${checkData.title}.${ext}`;
-      }
-    } catch (e) {
-      // ignore JSON parse if empty
-    }
+    const prepData = await prepRes.json();
+    const streamUrl = prepData.stream_url;
+    const downloadFilename = prepData.filename || "download";
 
-    // 3. Pre-check succeeded: trigger native direct streaming download via <a> tag.
-    // Avoids buffering multi-hundred MB into browser V8 JS heap (prevents browser tab OOM crashes).
-    showToast("Сервер готовит поток. Файл сохраняется напрямую браузером...");
+    // 3. File is guaranteed ready on disk: trigger native browser download via <a href="/api/stream/{token}">.
+    // Avoids buffering large files in browser JS heap while guaranteeing zero 400/404 navigation errors.
+    showToast("Файл готов! Начинается сохранение в браузере...");
     const a = document.createElement("a");
-    a.href = url;
+    a.href = streamUrl;
     a.setAttribute("download", downloadFilename);
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
+    checkHealth();
   } catch (err) {
-    showAlert("Ошибка сети", `Не удалось выполнить проверку или начать загрузку: ${err.message}`);
+    showAlert("Ошибка сети", `Не удалось подготовить или начать загрузку: ${err.message}`);
   } finally {
     btn.disabled = false;
     btn.innerHTML = originalHtml;

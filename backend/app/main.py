@@ -17,16 +17,20 @@ from .schemas import (
     AnalyzeResponse,
     HealthResponse,
     CheckDownloadResponse,
+    PrepareDownloadResponse,
 )
 from .services.cleanup import start_periodic_cleanup_thread, delete_file_safely
 from .services.youtube import (
     get_ffmpeg_path,
+    get_nodejs_available,
     get_active_downloads_count,
     check_download_feasibility,
     extract_video_metadata,
     download_video_file,
     download_audio_file,
     download_subtitles_file,
+    register_prepared_file,
+    pop_prepared_file,
 )
 
 
@@ -98,7 +102,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="YouTube Video Analyzer & Downloader API",
     description="Full-stack YouTube analyzer, metadata extractor, and media downloader.",
-    version="1.1.0",
+    version="1.2.0",
     lifespan=lifespan
 )
 
@@ -132,6 +136,7 @@ async def health_check():
     even when worker threads are busy with yt-dlp.
     """
     ffmpeg_bin = get_ffmpeg_path()
+    nodejs_ok = get_nodejs_available()
     cookies_present = bool(
         settings.COOKIES_FILE or settings.COOKIES_TEXT or settings.COOKIES_FROM_BROWSER
     )
@@ -146,6 +151,7 @@ async def health_check():
     return HealthResponse(
         status="ok",
         ffmpeg_available=bool(ffmpeg_bin),
+        nodejs_available=nodejs_ok,
         proxy_configured=bool(settings.PROXY_URL),
         cookies_configured=cookies_present,
         storage_dir=str(settings.STORAGE_DIR),
@@ -169,7 +175,6 @@ def check_download(
     """
     Pre-flight check before initiating heavy file downloads.
     Validates URL, rate limit, server concurrency slot, and actual video accessibility.
-    Returns video title and status, preventing silent browser download failures.
     """
     rate_limiter.check(request)
     normalized_url = validate_youtube_url(url)
@@ -195,6 +200,62 @@ def check_download(
         raise HTTPException(status_code=status_code, detail=msg)
 
     return CheckDownloadResponse(ok=True, message=msg, title=title)
+
+
+@app.get("/api/prepare-download", response_model=PrepareDownloadResponse)
+def prepare_download(
+    request: Request,
+    url: str = Query(..., description="YouTube URL"),
+    kind: str = Query("video", pattern="^(video|audio|transcript)$"),
+    quality: str = Query("720p"),
+    format: str = Query("mp3"),
+    lang: str = Query("ru"),
+):
+    """
+    Two-phase download preparation endpoint:
+    Downloads/merges the requested media or subtitle file on the server FIRST via XHR/fetch,
+    so any yt-dlp/YouTube error is returned as structured JSON to the frontend UI (preventing
+    Firefox/Chrome from navigating to a raw 400/404 browser error page).
+    Returns a one-time stream token for native browser download via GET /api/stream/{token}.
+    """
+    rate_limiter.check(request)
+    normalized_url = validate_youtube_url(url)
+
+    if kind == "video":
+        target_file, filename, mime_type = download_video_file(normalized_url, quality)
+    elif kind == "audio":
+        target_file, filename, mime_type = download_audio_file(normalized_url, format)
+    else:
+        target_file, filename, mime_type = download_subtitles_file(normalized_url, lang, format)
+
+    token = register_prepared_file(target_file, filename, mime_type)
+    return PrepareDownloadResponse(
+        ok=True,
+        token=token,
+        filename=filename,
+        stream_url=f"/api/stream/{token}",
+    )
+
+
+@app.get("/api/stream/{token}")
+def stream_prepared_file(token: str, background_tasks: BackgroundTasks):
+    """
+    Streams an already-prepared file by its one-time token and deletes the temporary job directory
+    immediately after streaming completes.
+    """
+    item = pop_prepared_file(token)
+    if not item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Ссылка на скачивание устарела или уже была использована. Пожалуйста, нажмите кнопку скачивания ещё раз."
+        )
+    target_file, filename, mime_type = item
+    background_tasks.add_task(delete_file_safely, target_file.parent)
+    return FileResponse(
+        path=target_file,
+        media_type=mime_type,
+        headers={"Content-Disposition": make_content_disposition(filename)},
+    )
 
 
 @app.post("/api/analyze", response_model=AnalyzeResponse)

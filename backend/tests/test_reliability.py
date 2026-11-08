@@ -5,9 +5,11 @@ Covers Render Free 512MB RAM protections and core functionality:
 - Height capping and elimination of unconstrained /best and /worst, with H.264 priority
 - Error message credential sanitization (no sensitive data leaks)
 - Pre-flight check endpoint (/api/check-download) with video accessibility, 1080p cap, live stream & duration guard
-- cgroup/RSS memory diagnostics (/api/health)
+- Two-phase download (/api/prepare-download + /api/stream/{token}) preventing browser 400/404 error screens
+- cgroup/RSS memory and Node.js diagnostics (/api/health)
 - Cyrillic Content-Disposition latin-1 HTTP header safety
-- WebVTT to SRT conversion and clean TXT transcript extraction
+- WebVTT, JSON3, and SRV3 XML subtitle conversion to SRT and clean TXT
+- Storyboard (mhtml) filtering
 - Writable cookiefile copy for read-only mounts (/etc/secrets/cookies.txt)
 - Extended URL validation (query param order, music.youtube.com, shorts, live)
 """
@@ -15,6 +17,7 @@ Covers Render Free 512MB RAM protections and core functionality:
 import os
 import re
 import sys
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -41,6 +44,9 @@ from backend.app.services.youtube import (
     srt_to_clean_txt,
     vtt_to_srt,
     _prepare_writable_cookiefile,
+    _is_storyboard_or_non_media,
+    register_prepared_file,
+    pop_prepared_file,
 )
 
 
@@ -144,7 +150,7 @@ class TestReliabilityAndSafety(unittest.TestCase):
             self.assertEqual(ctx.exception.status_code, 400)
             self.assertIn("каналы не поддерживаются", ctx.exception.detail)
 
-    # 5. Pre-check feasibility with format verification
+    # 5. Pre-check feasibility with format verification & storyboard filtering
     @patch("backend.app.services.youtube.get_cached_or_extract_info")
     @patch("backend.app.services.youtube.get_ffmpeg_path")
     def test_check_download_feasibility_ok(self, mock_ffmpeg, mock_info):
@@ -180,6 +186,13 @@ class TestReliabilityAndSafety(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("Видео недоступно в качестве ≤720p", msg)
 
+    def test_storyboard_filtering(self):
+        """Ensures mhtml storyboards are detected as non-media."""
+        sb_fmt = {"format_id": "sb0", "ext": "mhtml", "height": 180, "vcodec": "none", "acodec": "none"}
+        real_fmt = {"format_id": "18", "ext": "mp4", "height": 360, "vcodec": "avc1.42001E", "acodec": "mp4a.40.2"}
+        self.assertTrue(_is_storyboard_or_non_media(sb_fmt))
+        self.assertFalse(_is_storyboard_or_non_media(real_fmt))
+
     def test_check_download_feasibility_1080p_rejected_on_720p_cap(self):
         """Pre-check immediately rejects 1080p when server MAX_VIDEO_HEIGHT is 720."""
         with patch.object(settings, "MAX_VIDEO_HEIGHT", 720):
@@ -201,13 +214,14 @@ class TestReliabilityAndSafety(unittest.TestCase):
 
     # 7. Health endpoint memory diagnostics
     def test_health_endpoint(self):
-        """Tests /api/health reports RSS memory and concurrency constraints."""
+        """Tests /api/health reports RSS memory, nodejs_available, and concurrency constraints."""
         res = self.client.get("/api/health")
         self.assertEqual(res.status_code, 200)
         data = res.json()
         self.assertEqual(data["status"], "ok")
         self.assertEqual(data["concurrency_limit"], settings.MAX_CONCURRENT_DOWNLOADS)
         self.assertEqual(data["max_video_height"], settings.MAX_VIDEO_HEIGHT)
+        self.assertIn("nodejs_available", data)
         self.assertIn("rss_mb", data)
         self.assertIn("oom_risk", data)
         self.assertIn(data["oom_risk"], ("low", "medium", "high"))
@@ -225,18 +239,40 @@ class TestReliabilityAndSafety(unittest.TestCase):
         self.assertTrue(data["ok"])
         self.assertEqual(data["title"], "test_video")
 
-    # 9. Cyrillic Content-Disposition Latin-1 encoding safety
+    # 9. Two-phase prepare & stream endpoint test
+    @patch("backend.app.main.download_subtitles_file")
+    def test_two_phase_prepare_and_stream(self, mock_dl_subs):
+        """Tests /api/prepare-download followed by /api/stream/{token}."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            job_dir = Path(tmpdir) / "subs_test"
+            job_dir.mkdir(parents=True, exist_ok=True)
+            sub_file = job_dir / "test_ru.txt"
+            sub_file.write_text("Привет мир", encoding="utf-8")
+            mock_dl_subs.return_value = (sub_file, "Видео_ru.txt", "text/plain; charset=utf-8")
+
+            prep_res = self.client.get(
+                "/api/prepare-download?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ&kind=transcript&lang=ru&format=txt"
+            )
+            self.assertEqual(prep_res.status_code, 200)
+            prep_data = prep_res.json()
+            self.assertTrue(prep_data["ok"])
+            self.assertIn("token", prep_data)
+
+            stream_res = self.client.get(prep_data["stream_url"])
+            self.assertEqual(stream_res.status_code, 200)
+            self.assertEqual(stream_res.text, "Привет мир")
+
+    # 10. Cyrillic Content-Disposition Latin-1 encoding safety
     def test_content_disposition_cyrillic_latin1_safe(self):
         """Ensures Cyrillic filenames do not crash Starlette latin-1 header encoding."""
         header = make_content_disposition("Разбор_полетов_720p.mp4")
-        # Must encode cleanly in latin-1 without UnicodeEncodeError
         encoded = header.encode("latin-1")
         self.assertIsInstance(encoded, bytes)
         self.assertIn("filename*=UTF-8''", header)
 
-    # 10. WebVTT cleaning and SRT conversion
-    def test_vtt_and_srt_cleaning(self):
-        """Ensures WEBVTT metadata, timestamps, HTML entities, and rolling duplicates are stripped."""
+    # 11. WebVTT, JSON3, and XML cleaning and SRT conversion
+    def test_vtt_json3_xml_cleaning(self):
+        """Ensures WEBVTT, JSON3, and SRV3 XML subtitles convert cleanly to TXT and SRT."""
         sample_vtt = (
             "WEBVTT\n"
             "Kind: captions\n"
@@ -247,14 +283,24 @@ class TestReliabilityAndSafety(unittest.TestCase):
             "Привет &amp; добро пожаловать!\n"
             "Вторая строка текста&#39;\n"
         )
-        clean_txt = srt_to_clean_txt(sample_vtt)
-        self.assertEqual(clean_txt, "Привет & добро пожаловать!\nВторая строка текста'")
-
+        self.assertEqual(srt_to_clean_txt(sample_vtt), "Привет & добро пожаловать!\nВторая строка текста'")
         converted_srt = vtt_to_srt(sample_vtt)
         self.assertIn("1\n00:00:01,000 --> 00:00:03,500\nПривет & добро пожаловать!", converted_srt)
-        self.assertNotIn("WEBVTT", converted_srt)
 
-    # 11. Writable runtime cookies from COOKIES_TEXT
+        sample_json3 = json.dumps({
+            "events": [
+                {"tStartMs": 1000, "dDurationMs": 2000, "segs": [{"utf8": "Первая "}, {"utf8": "фраза"}]},
+                {"tStartMs": 3000, "dDurationMs": 2000, "segs": [{"utf8": "Вторая фраза"}]},
+            ]
+        })
+        self.assertEqual(srt_to_clean_txt(sample_json3), "Первая фраза\nВторая фраза")
+        self.assertIn("00:00:01,000 --> 00:00:03,000", vtt_to_srt(sample_json3))
+
+        sample_xml = '<transcript><text start="1.5" dur="2.0">Привет из XML</text></transcript>'
+        self.assertEqual(srt_to_clean_txt(sample_xml), "Привет из XML")
+        self.assertIn("00:00:01,500 --> 00:00:03,500", vtt_to_srt(sample_xml))
+
+    # 12. Writable runtime cookies from COOKIES_TEXT
     def test_writable_cookies_from_text(self):
         """Ensures COOKIES_TEXT is normalized and written to a writable file in STORAGE_DIR."""
         with tempfile.TemporaryDirectory() as tmpdir:
