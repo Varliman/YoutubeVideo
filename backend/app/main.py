@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, Request, Query, BackgroundTasks, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import settings
@@ -84,7 +84,6 @@ def get_process_rss_mb() -> float:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan context: starts background cleanup tasks."""
-    # Ensure temporary storage directory exists
     os.makedirs(settings.STORAGE_DIR, exist_ok=True)
 
     # Start periodic storage cleaner (runs every 15 mins, purges files older than 30 mins)
@@ -99,15 +98,16 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="YouTube Video Analyzer & Downloader API",
     description="Full-stack YouTube analyzer, metadata extractor, and media downloader.",
-    version="1.0.0",
+    version="1.1.0",
     lifespan=lifespan
 )
 
-# CORS setup
+# CORS setup (disable credentials when wildcard '*' is used to comply with Fetch CORS spec)
+_allow_creds = "*" not in settings.CORS_ORIGINS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=True,
+    allow_credentials=_allow_creds,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -118,14 +118,19 @@ def make_content_disposition(filename: str) -> str:
     Creates an RFC 5987 / RFC 6266 compliant Content-Disposition header.
     Ensures safe ASCII fallback + UTF-8 filename* for Cyrillic and unicode titles.
     """
-    ascii_fallback = "".join(c if c.isalnum() or c in "._-" else "_" for c in filename)
+    ascii_fallback = "".join(c if (c.isascii() and (c.isalnum() or c in "._-")) else "_" for c in filename)
+    ascii_fallback = ascii_fallback.strip("_") or "download"
     encoded_utf8 = urllib.parse.quote(filename)
     return f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{encoded_utf8}'
 
 
 @app.get("/api/health", response_model=HealthResponse)
-def health_check():
-    """Health check endpoint with Render Free 512MB RAM diagnostics."""
+async def health_check():
+    """
+    Async health check endpoint with Render Free 512MB RAM diagnostics.
+    Runs directly on the event loop so Render health probes never time out
+    even when worker threads are busy with yt-dlp.
+    """
     ffmpeg_bin = get_ffmpeg_path()
     cookies_present = bool(
         settings.COOKIES_FILE or settings.COOKIES_TEXT or settings.COOKIES_FROM_BROWSER
@@ -177,10 +182,14 @@ def check_download(
         lang=lang
     )
     if not is_ok:
-        if "Сервер в данный момент" in msg or "Сервер занят" in msg:
+        if "Сервер в данный момент" in msg or "Сервер занят" in msg or "429" in msg or "FFmpeg не установлен" in msg:
             status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         elif "Видео недоступно в качестве" in msg:
             status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+        elif "требует авторизации" in msg:
+            status_code = status.HTTP_403_FORBIDDEN
+        elif "не найдены" in msg or "удалено" in msg:
+            status_code = status.HTTP_404_NOT_FOUND
         else:
             status_code = status.HTTP_400_BAD_REQUEST
         raise HTTPException(status_code=status_code, detail=msg)

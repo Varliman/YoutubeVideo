@@ -1,12 +1,10 @@
-# ПОЛНЫЙ СНИМОК КОДОВОЙ БАЗЫ: youtube-analyzer-web
+### Дерево каталогов проекта `youtube-analyzer-web` (v1.1.0 — Render Free Optimized)
 
-## Структура проекта (Дерево каталогов)
-
-`	ext
+```text
 youtube-analyzer-web/
-├── backend
-│   ├── app
-│   │   ├── services
+├── backend/
+│   ├── app/
+│   │   ├── services/
 │   │   │   ├── __init__.py
 │   │   │   ├── cleanup.py
 │   │   │   └── youtube.py
@@ -15,14 +13,15 @@ youtube-analyzer-web/
 │   │   ├── limiter.py
 │   │   ├── main.py
 │   │   └── schemas.py
-│   └── tests
+│   └── tests/
 │       └── test_reliability.py
-├── frontend
+├── frontend/
 │   ├── app.js
 │   ├── index.html
 │   └── style.css
 ├── .env.example
 ├── .gitignore
+├── CODEBASE_SNAPSHOT.md
 ├── docker-compose.yml
 ├── Dockerfile
 ├── fly.toml
@@ -31,38 +30,13 @@ youtube-analyzer-web/
 ├── README.md
 ├── render.yaml
 └── requirements.txt
-`
+```
 
-## Список файлов
 
-1. .env.example (3,014 байт)
-2. .gitignore (684 байт)
-3. backend/app/__init__.py (94 байт)
-4. backend/app/config.py (2,997 байт)
-5. backend/app/limiter.py (4,850 байт)
-6. backend/app/main.py (9,559 байт)
-7. backend/app/schemas.py (2,424 байт)
-8. backend/app/services/__init__.py (24 байт)
-9. backend/app/services/cleanup.py (2,672 байт)
-10. backend/app/services/youtube.py (36,696 байт)
-11. backend/tests/test_reliability.py (9,343 байт)
-12. docker-compose.yml (717 байт)
-13. Dockerfile (1,493 байт)
-14. fly.toml (493 байт)
-15. frontend/app.js (20,694 байт)
-16. frontend/index.html (15,770 байт)
-17. frontend/style.css (17,251 байт)
-18. LICENSE (1,086 байт)
-19. package.json (811 байт)
-20. README.md (20,377 байт)
-21. render.yaml (528 байт)
-22. requirements.txt (135 байт)
+### 1. Конфигурация и окружение
 
----
-
-### Файл: .env.example
-
-`shell
+#### Файл: `.env.example`
+```shell
 # =====================================================================
 # Настройки сервера YouTube Video Analyzer
 # =====================================================================
@@ -117,14 +91,10 @@ FILE_RETENTION_MINUTES=30
 
 # Разрешенные CORS-домены (через запятую или * для всех)
 CORS_ORIGINS=*
+```
 
-`
-
----
-
-### Файл: .gitignore
-
-`gitignore
+#### Файл: `.gitignore`
+```gitignore
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -190,25 +160,236 @@ desktop.ini
 *.m4a
 *.srt
 *.vtt
+```
 
-`
+#### Файл: `requirements.txt`
+```text
+fastapi>=0.110.0
+uvicorn[standard]>=0.28.0
+pydantic>=2.6.0
+python-dotenv>=1.0.0
+yt-dlp>=2024.3.10
+imageio-ffmpeg>=0.4.9
+pytest>=8.0.0
+```
 
----
+#### Файл: `package.json`
+```json
+{
+  "name": "youtube-analyzer-web",
+  "version": "1.0.0",
+  "description": "Full-stack YouTube video metadata analyzer, media downloader and transcript extractor",
+  "main": "backend/app/main.py",
+  "scripts": {
+    "start": "python -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8000",
+    "dev": "python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000 --reload",
+    "docker:build": "docker build -t yt-analyzer-web .",
+    "docker:run": "docker run -p 8000:8000 --env-file .env yt-analyzer-web",
+    "compose:up": "docker compose up -d",
+    "compose:down": "docker compose down"
+  },
+  "keywords": [
+    "youtube",
+    "yt-dlp",
+    "fastapi",
+    "video-downloader",
+    "transcript",
+    "subtitles",
+    "ffmpeg"
+  ],
+  "author": "YouTube Analyzer Contributors",
+  "license": "MIT"
+}
+```
 
-### Файл: backend/app/__init__.py
+#### Файл: `render.yaml`
+```yaml
+services:
+  - type: web
+    name: yt-analyzer-web
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: MALLOC_ARENA_MAX
+        value: 2
+      - key: PROXY_URL
+        sync: false
+      - key: COOKIES_TEXT
+        sync: false
+      - key: MAX_DURATION_SECONDS
+        value: 7200
+      - key: MAX_FILE_SIZE_MB
+        value: 350
+      - key: MAX_CONCURRENT_DOWNLOADS
+        value: 1
+      - key: MAX_VIDEO_HEIGHT
+        value: 720
+      - key: CLEANUP_INTERVAL_MINUTES
+        value: 10
+      - key: FILE_RETENTION_MINUTES
+        value: 15
+      - key: RATE_LIMIT_PER_MINUTE
+        value: 20
+```
 
-`python
+#### Файл: `fly.toml`
+```toml
+app = "yt-analyzer-web"
+primary_region = "fra"
+
+[env]
+  MAX_CONCURRENT_DOWNLOADS = "1"
+  MAX_VIDEO_HEIGHT = "720"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+[[http_service.checks]]
+  grace_period = "10s"
+  interval = "30s"
+  method = "GET"
+  timeout = "5s"
+  path = "/api/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+```
+
+#### Файл: `Dockerfile`
+```dockerfile
+# Multi-stage/Slim production Dockerfile optimized for Render Free (512MB RAM)
+FROM python:3.11-slim
+
+# Prevent Python from writing .pyc files, enable unbuffered logging,
+# and cap glibc malloc arenas to 2 to prevent multithreaded memory fragmentation on 512MB RAM
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    MALLOC_ARENA_MAX=2 \
+    DEBIAN_FRONTEND=noninteractive \
+    PORT=8000 \
+    HOST=0.0.0.0
+
+# Install system dependencies: ffmpeg for media merging/audio conversion, curl for healthchecks
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root application user for container security
+RUN groupadd -r appgroup && useradd -r -g appgroup -d /app -s /sbin/nologin appuser
+
+# Set working directory
+WORKDIR /app
+
+# Install Python requirements (skipping duplicate 80MB imageio-ffmpeg wheel since system ffmpeg is installed)
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    grep -vE '^(imageio-ffmpeg|pytest)' requirements.txt > requirements.prod.txt && \
+    pip install --no-cache-dir -r requirements.prod.txt && \
+    rm -f requirements.prod.txt
+
+# Copy source code and static frontend
+COPY backend/ ./backend/
+COPY frontend/ ./frontend/
+
+# Create downloads folder and assign ownership to non-root user
+RUN mkdir -p /app/downloads && chown -R appuser:appgroup /app
+
+# Switch to non-root user
+USER appuser
+
+# Expose port (can be overridden by $PORT on Render/Railway/Fly.io)
+EXPOSE 8000
+
+# Container healthcheck
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -f http://localhost:${PORT}/api/health || exit 1
+
+# Launch production server with single worker and tuned keep-alive for 512MB RAM
+CMD ["sh", "-c", "uvicorn backend.app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1 --timeout-keep-alive 15"]
+```
+
+#### Файл: `docker-compose.yml`
+```yaml
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: yt-analyzer-web
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8000}:8000"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+      - PROXY_URL=${PROXY_URL:-}
+      - COOKIES_FILE=${COOKIES_FILE:-}
+      - COOKIES_TEXT=${COOKIES_TEXT:-}
+      - COOKIES_FROM_BROWSER=${COOKIES_FROM_BROWSER:-}
+      - MAX_DURATION_SECONDS=${MAX_DURATION_SECONDS:-14400}
+      - MAX_FILE_SIZE_MB=${MAX_FILE_SIZE_MB:-1024}
+      - RATE_LIMIT_PER_MINUTE=${RATE_LIMIT_PER_MINUTE:-30}
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./downloads:/app/downloads
+      - ./cookies.txt:/app/cookies.txt:ro
+```
+
+#### Файл: `LICENSE`
+```text
+MIT License
+
+Copyright (c) 2026 YouTube Analyzer Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+
+### 2. Бэкенд (FastAPI, yt-dlp, FFmpeg)
+
+#### Файл: `backend/app/__init__.py`
+```python
 """YouTube Video Analyzer & Downloader Backend Application Package."""
 
 __version__ = "1.0.0"
+```
 
-`
-
----
-
-### Файл: backend/app/config.py
-
-`python
+#### Файл: `backend/app/config.py`
+```python
 """Application configuration loaded from environment variables."""
 
 import os
@@ -286,36 +467,28 @@ settings = Settings()
 
 # Ensure download storage directory exists
 os.makedirs(settings.STORAGE_DIR, exist_ok=True)
+```
 
-`
-
----
-
-### Файл: backend/app/limiter.py
-
-`python
-"""Security validations and in-memory rate limiting."""
+#### Файл: `backend/app/limiter.py`
+```python
+"""Security validations and thread-safe in-memory rate limiting."""
 
 import re
 import time
-from collections import defaultdict
-from urllib.parse import urlparse
+import threading
+from urllib.parse import urlparse, parse_qs
 from fastapi import Request, HTTPException, status
 from .config import settings
 
-# YouTube URL regex matching standard watch, shorts, embed, live, youtu.be
-YOUTUBE_URL_REGEX = re.compile(
-    r'^(https?://)?(www\.|m\.)?(youtube\.com/(watch\?v=|shorts/|live/|embed/)|youtu\.be/)([\w-]{11})',
-    re.IGNORECASE
-)
-
-# Extract video ID
-VIDEO_ID_REGEX = re.compile(r'([a-zA-Z0-9_-]{11})')
+# Strict 11-character YouTube video ID pattern
+VIDEO_ID_EXACT_REGEX = re.compile(r'^[a-zA-Z0-9_-]{11}$')
 
 
 def validate_youtube_url(url: str) -> str:
     """
-    Validates the YouTube URL, prevents SSRF attacks, and returns normalized URL.
+    Validates the YouTube URL, prevents SSRF attacks, and returns a normalized canonical URL.
+    Supports standard watch URLs (regardless of query param order), shorts, live, embed, v,
+    youtu.be, and music.youtube.com.
     Raises HTTPException(400) if the URL is invalid or unsafe.
     """
     if not url or not isinstance(url, str):
@@ -327,7 +500,7 @@ def validate_youtube_url(url: str) -> str:
     url = url.strip()
 
     # Prepend https:// if protocol was omitted
-    if not url.startswith("http://") and not url.startswith("https://"):
+    if not url.lower().startswith(("http://", "https://")):
         url = "https://" + url
 
     try:
@@ -338,10 +511,23 @@ def validate_youtube_url(url: str) -> str:
             detail="Некорректный формат URL."
         )
 
+    # Reject URLs with embedded credentials (user:pass@host) to prevent SSRF tricks
+    if parsed.username or parsed.password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Некорректный формат URL: запрещены учетные данные в адресе."
+        )
+
     # Allowed hostnames
     allowed_hosts = {
-        "youtube.com", "www.youtube.com", "m.youtube.com",
-        "youtu.be", "www.youtu.be"
+        "youtube.com",
+        "www.youtube.com",
+        "m.youtube.com",
+        "music.youtube.com",
+        "youtu.be",
+        "www.youtu.be",
+        "youtube-nocookie.com",
+        "www.youtube-nocookie.com",
     }
 
     hostname = (parsed.hostname or "").lower()
@@ -351,39 +537,60 @@ def validate_youtube_url(url: str) -> str:
             detail="Разрешены только ссылки на YouTube (youtube.com или youtu.be)."
         )
 
-    # Check for playlists or channels without specific video ID (strict prefix matching)
-    path = parsed.path.lower()
-    if path == "/playlist" or path.startswith("/playlist/") or (parsed.query and "list=" in parsed.query and "v=" not in parsed.query):
+    path = parsed.path or ""
+    path_lower = path.lower()
+    query_params = parse_qs(parsed.query)
+
+    # Check for pure playlists or channels without a specific video ID
+    if path_lower == "/playlist" or path_lower.startswith("/playlist/") or ("list" in query_params and "v" not in query_params and hostname not in {"youtu.be", "www.youtu.be"}):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Скачивание плейлистов целиком не поддерживается. Пожалуйста, укажите ссылку на конкретное видео."
         )
-    if path.startswith("/@") or path.startswith("/channel/") or path.startswith("/c/") or path.startswith("/user/"):
+    if path_lower.startswith(("/@", "/channel/", "/c/", "/user/")):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Ссылки на каналы не поддерживаются. Пожалуйста, укажите ссылку на конкретное видео."
         )
 
-    # Validate pattern and extract ID
-    match = YOUTUBE_URL_REGEX.match(url)
-    if not match:
+    video_id = None
+
+    if hostname in {"youtu.be", "www.youtu.be"}:
+        # Format: https://youtu.be/<11-char-id>
+        segments = [seg for seg in path.split("/") if seg]
+        if segments:
+            video_id = segments[0]
+    else:
+        # Format 1: /watch?v=<11-char-id> (supports v= anywhere in query string)
+        if path_lower in {"/watch", "/watch/"} and "v" in query_params:
+            v_list = query_params.get("v")
+            if v_list:
+                video_id = v_list[0]
+        else:
+            # Format 2: /shorts/<id>, /live/<id>, /embed/<id>, /v/<id>
+            segments = [seg for seg in path.split("/") if seg]
+            if len(segments) >= 2 and segments[0].lower() in {"shorts", "live", "embed", "v"}:
+                video_id = segments[1]
+
+    if not video_id or not VIDEO_ID_EXACT_REGEX.match(video_id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Не удалось распознать корректный идентификатор видео YouTube в ссылке."
+            detail="Не удалось распознать корректный 11-символьный идентификатор видео YouTube в ссылке."
         )
 
-    video_id = match.group(5)
     # Return normalized canonical URL
     return f"https://www.youtube.com/watch?v={video_id}"
 
 
 class InMemoryRateLimiter:
-    """Sliding-window in-memory rate limiter per client IP."""
+    """Thread-safe sliding-window in-memory rate limiter per client IP with automatic memory pruning."""
 
     def __init__(self, limit_per_minute: int = 30):
         self.limit = limit_per_minute
         self.window = 60.0  # seconds
-        self.requests: dict[str, list[float]] = defaultdict(list)
+        self.requests: dict[str, list[float]] = {}
+        self._lock = threading.Lock()
+        self._last_full_prune = time.time()
 
     def _get_client_ip(self, request: Request) -> str:
         """Extracts client IP, respecting forward headers from proxies like Render/Cloudflare."""
@@ -395,37 +602,145 @@ class InMemoryRateLimiter:
             return real_ip.strip()
         return request.client.host if request.client else "unknown"
 
-    def check(self, request: Request):
-        """Checks rate limit for current request; raises HTTPException(429) if exceeded."""
-        if self.limit <= 0:
-            return  # Rate limiting disabled
-
+    def is_allowed(self, request: Request) -> bool:
+        """Checks if current client IP is allowed under the rate limit."""
         ip = self._get_client_ip(request)
         now = time.time()
-        timestamps = self.requests[ip]
 
-        # Evict timestamps outside current 60s sliding window
-        valid_timestamps = [t for t in timestamps if now - t < self.window]
-        self.requests[ip] = valid_timestamps
+        with self._lock:
+            # Periodic global prune of stale IP keys every 5 minutes to prevent memory growth
+            if now - self._last_full_prune > 300.0:
+                stale_ips = [
+                    k for k, ts_list in self.requests.items()
+                    if not ts_list or (now - ts_list[-1] >= self.window)
+                ]
+                for k in stale_ips:
+                    self.requests.pop(k, None)
+                self._last_full_prune = now
 
-        if len(valid_timestamps) >= self.limit:
+            timestamps = self.requests.get(ip, [])
+            valid_timestamps = [t for t in timestamps if now - t < self.window]
+
+            if len(valid_timestamps) >= self.limit:
+                self.requests[ip] = valid_timestamps
+                return False
+
+            valid_timestamps.append(now)
+            self.requests[ip] = valid_timestamps
+            return True
+
+    def check(self, request: Request):
+        """Raises HTTPException(429) if rate limit is exceeded."""
+        if not self.is_allowed(request):
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=f"Слишком много запросов. Лимит: {self.limit} в минуту с одного IP. Подождите немного."
+                detail=f"Слишком много запросов. Лимит сервера: {self.limit} запросов в минуту."
             )
 
-        valid_timestamps.append(now)
+
+# Global rate limiter instance
+rate_limiter = InMemoryRateLimiter(limit_per_minute=settings.RATE_LIMIT_PER_MINUTE)
+```
+
+#### Файл: `backend/app/schemas.py`
+```python
+"""Pydantic data models for request and response serialization."""
+
+from typing import Optional
+from pydantic import BaseModel, Field
 
 
-rate_limiter = InMemoryRateLimiter(settings.RATE_LIMIT_PER_MINUTE)
+class AnalyzeRequest(BaseModel):
+    """Payload to request video analysis."""
+    url: str = Field(..., description="YouTube video URL (watch, shorts, youtu.be, embed, music)")
 
-`
 
----
+class FormatItem(BaseModel):
+    """Raw format details extracted by yt-dlp."""
+    format_id: str
+    ext: str
+    resolution: str
+    fps: Optional[float] = None
+    filesize: Optional[int] = None
+    filesize_str: str
+    vcodec: Optional[str] = None
+    acodec: Optional[str] = None
+    note: Optional[str] = None
 
-### Файл: backend/app/main.py
 
-`python
+class VideoOption(BaseModel):
+    """Preset video download choice with estimated size and availability flag."""
+    quality: str  # 1080p, 720p, 480p, 360p, best
+    label: str
+    ext: str = "mp4"
+    filesize_approx_mb: Optional[float] = None
+    filesize_str: str
+    download_url: str
+    available: bool = True
+
+
+class AudioOption(BaseModel):
+    """Preset audio download choice with estimated size."""
+    format: str  # mp3, m4a
+    label: str
+    bitrate_kbps: int
+    filesize_approx_mb: Optional[float] = None
+    filesize_str: str
+    download_url: str
+    available: bool = True
+
+
+class SubtitleOption(BaseModel):
+    """Available transcript/subtitle language."""
+    lang: str
+    name: str
+    is_auto: bool
+    txt_url: str
+    srt_url: str
+
+
+class AnalyzeResponse(BaseModel):
+    """Comprehensive video metadata and download options."""
+    id: str
+    title: str
+    channel: str
+    channel_url: Optional[str] = None
+    duration: int
+    duration_str: str
+    upload_date: Optional[str] = None
+    view_count: Optional[int] = None
+    thumbnail: Optional[str] = None
+    original_url: str
+    description: Optional[str] = None
+    video_options: list[VideoOption]
+    audio_options: list[AudioOption]
+    subtitle_options: list[SubtitleOption]
+    all_formats: list[FormatItem]
+
+
+class CheckDownloadResponse(BaseModel):
+    """Pre-check validation response prior to launching heavy downloads."""
+    ok: bool
+    title: Optional[str] = None
+    message: Optional[str] = None
+
+
+class HealthResponse(BaseModel):
+    """Health check response with Render Free 512MB RAM diagnostics."""
+    status: str
+    ffmpeg_available: bool
+    proxy_configured: bool
+    cookies_configured: bool
+    storage_dir: str
+    concurrency_limit: int
+    max_video_height: int
+    current_active_downloads: int
+    rss_mb: float
+    oom_risk: str  # "low" | "medium" | "high"
+```
+
+#### Файл: `backend/app/main.py`
+```python
 """FastAPI web server: video analysis, downloads, and static frontend serving."""
 
 import os
@@ -435,7 +750,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, Request, Query, BackgroundTasks, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import settings
@@ -512,7 +827,6 @@ def get_process_rss_mb() -> float:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan context: starts background cleanup tasks."""
-    # Ensure temporary storage directory exists
     os.makedirs(settings.STORAGE_DIR, exist_ok=True)
 
     # Start periodic storage cleaner (runs every 15 mins, purges files older than 30 mins)
@@ -527,15 +841,16 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="YouTube Video Analyzer & Downloader API",
     description="Full-stack YouTube analyzer, metadata extractor, and media downloader.",
-    version="1.0.0",
+    version="1.1.0",
     lifespan=lifespan
 )
 
-# CORS setup
+# CORS setup (disable credentials when wildcard '*' is used to comply with Fetch CORS spec)
+_allow_creds = "*" not in settings.CORS_ORIGINS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=True,
+    allow_credentials=_allow_creds,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -546,14 +861,19 @@ def make_content_disposition(filename: str) -> str:
     Creates an RFC 5987 / RFC 6266 compliant Content-Disposition header.
     Ensures safe ASCII fallback + UTF-8 filename* for Cyrillic and unicode titles.
     """
-    ascii_fallback = "".join(c if c.isalnum() or c in "._-" else "_" for c in filename)
+    ascii_fallback = "".join(c if (c.isascii() and (c.isalnum() or c in "._-")) else "_" for c in filename)
+    ascii_fallback = ascii_fallback.strip("_") or "download"
     encoded_utf8 = urllib.parse.quote(filename)
     return f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{encoded_utf8}'
 
 
 @app.get("/api/health", response_model=HealthResponse)
-def health_check():
-    """Health check endpoint with Render Free 512MB RAM diagnostics."""
+async def health_check():
+    """
+    Async health check endpoint with Render Free 512MB RAM diagnostics.
+    Runs directly on the event loop so Render health probes never time out
+    even when worker threads are busy with yt-dlp.
+    """
     ffmpeg_bin = get_ffmpeg_path()
     cookies_present = bool(
         settings.COOKIES_FILE or settings.COOKIES_TEXT or settings.COOKIES_FROM_BROWSER
@@ -605,10 +925,14 @@ def check_download(
         lang=lang
     )
     if not is_ok:
-        if "Сервер в данный момент" in msg or "Сервер занят" in msg:
+        if "Сервер в данный момент" in msg or "Сервер занят" in msg or "429" in msg or "FFmpeg не установлен" in msg:
             status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         elif "Видео недоступно в качестве" in msg:
             status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+        elif "требует авторизации" in msg:
+            status_code = status.HTTP_403_FORBIDDEN
+        elif "не найдены" in msg or "удалено" in msg:
+            status_code = status.HTTP_404_NOT_FOUND
         else:
             status_code = status.HTTP_400_BAD_REQUEST
         raise HTTPException(status_code=status_code, detail=msg)
@@ -710,125 +1034,17 @@ def download_transcript(
 frontend_dir = Path(__file__).resolve().parent.parent.parent / "frontend"
 if frontend_dir.exists():
     app.mount("/", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")
+```
 
-`
-
----
-
-### Файл: backend/app/schemas.py
-
-`python
-"""Pydantic data models for request and response serialization."""
-
-from typing import Optional
-from pydantic import BaseModel, Field
-
-
-class AnalyzeRequest(BaseModel):
-    """Payload to request video analysis."""
-    url: str = Field(..., description="YouTube video URL (watch, shorts, youtu.be, embed)")
-
-
-class FormatItem(BaseModel):
-    """Raw format details extracted by yt-dlp."""
-    format_id: str
-    ext: str
-    resolution: str
-    fps: Optional[float] = None
-    filesize: Optional[int] = None
-    filesize_str: str
-    vcodec: Optional[str] = None
-    acodec: Optional[str] = None
-    note: Optional[str] = None
-
-
-class VideoOption(BaseModel):
-    """Preset video download choice with estimated size."""
-    quality: str  # 1080p, 720p, 480p, 360p, best
-    label: str
-    ext: str = "mp4"
-    filesize_approx_mb: Optional[float] = None
-    filesize_str: str
-    download_url: str
-
-
-class AudioOption(BaseModel):
-    """Preset audio download choice with estimated size."""
-    format: str  # mp3, m4a
-    label: str
-    bitrate_kbps: int
-    filesize_approx_mb: Optional[float] = None
-    filesize_str: str
-    download_url: str
-
-
-class SubtitleOption(BaseModel):
-    """Available transcript/subtitle language."""
-    lang: str
-    name: str
-    is_auto: bool
-    txt_url: str
-    srt_url: str
-
-
-class AnalyzeResponse(BaseModel):
-    """Comprehensive video metadata and download options."""
-    id: str
-    title: str
-    channel: str
-    channel_url: Optional[str] = None
-    duration: int
-    duration_str: str
-    upload_date: Optional[str] = None
-    view_count: Optional[int] = None
-    thumbnail: Optional[str] = None
-    original_url: str
-    description: Optional[str] = None
-    video_options: list[VideoOption]
-    audio_options: list[AudioOption]
-    subtitle_options: list[SubtitleOption]
-    all_formats: list[FormatItem]
-
-
-class CheckDownloadResponse(BaseModel):
-    """Pre-check validation response prior to launching heavy downloads."""
-    ok: bool
-    title: Optional[str] = None
-    message: Optional[str] = None
-
-
-class HealthResponse(BaseModel):
-    """Health check response with Render Free 512MB RAM diagnostics."""
-    status: str
-    ffmpeg_available: bool
-    proxy_configured: bool
-    cookies_configured: bool
-    storage_dir: str
-    concurrency_limit: int
-    max_video_height: int
-    current_active_downloads: int
-    rss_mb: float
-    oom_risk: str  # "low" | "medium" | "high"
-
-`
-
----
-
-### Файл: backend/app/services/__init__.py
-
-`python
+#### Файл: `backend/app/services/__init__.py`
+```python
 """Services package."""
+```
 
-`
-
----
-
-### Файл: backend/app/services/cleanup.py
-
-`python
+#### Файл: `backend/app/services/cleanup.py`
+```python
 """Temporary file cleanup utilities to prevent disk exhaustion."""
 
-import os
 import time
 import shutil
 import logging
@@ -838,13 +1054,15 @@ from pathlib import Path
 logger = logging.getLogger("cleanup")
 
 # Protected system files that must NEVER be deleted by cleanup (module-level constant)
-PROTECTED_FILENAMES = {"cookies.txt", ".gitkeep", "README.md"}
+PROTECTED_FILENAMES = {"cookies.txt", "runtime_cookies.txt", ".gitkeep", "README.md"}
 
 
 def delete_file_safely(file_or_dir_path: str | Path):
     """Safely removes a file or directory without raising exceptions."""
     try:
         p = Path(file_or_dir_path)
+        if p.name in PROTECTED_FILENAMES:
+            return
         if p.is_file():
             p.unlink(missing_ok=True)
             logger.info(f"Cleaned up temporary file: {p.name}")
@@ -883,9 +1101,16 @@ def cleanup_old_files(storage_dir: Path, max_age_seconds: int):
 
 def start_periodic_cleanup_thread(storage_dir: Path, interval_minutes: int, retention_minutes: int):
     """Starts a daemon thread that periodically purges old temporary download files."""
+    interval_secs = max(interval_minutes, 1) * 60
+    retention_secs = max(retention_minutes, 1) * 60
+
+    # Perform an immediate cleanup pass of any leftover expired files from previous runs
+    try:
+        cleanup_old_files(storage_dir, retention_secs)
+    except Exception as e:
+        logger.debug(f"Initial cleanup error: {e}")
+
     def worker():
-        interval_secs = max(interval_minutes, 1) * 60
-        retention_secs = max(retention_minutes, 1) * 60
         while True:
             try:
                 time.sleep(interval_secs)
@@ -899,23 +1124,21 @@ def start_periodic_cleanup_thread(storage_dir: Path, interval_minutes: int, rete
         f"Started storage cleanup worker (runs every {interval_minutes}m, "
         f"retention: {retention_minutes}m)"
     )
+```
 
-`
-
----
-
-### Файл: backend/app/services/youtube.py
-
-`python
+#### Файл: `backend/app/services/youtube.py`
+```python
 """YouTube extraction and media downloading service using yt-dlp and ffmpeg."""
 
 import os
 import re
+import html
 import time
 import uuid
 import shutil
 import logging
 import threading
+import urllib.parse
 from pathlib import Path
 from typing import Optional, Tuple
 import yt_dlp
@@ -948,19 +1171,23 @@ def sanitize_error_message(error: Exception | str) -> str:
 
 
 _download_semaphore = threading.Semaphore(settings.MAX_CONCURRENT_DOWNLOADS)
+_subtitles_semaphore = threading.Semaphore(max(3, settings.MAX_CONCURRENT_DOWNLOADS * 3))
 _active_downloads_count = 0
 _active_downloads_lock = threading.Lock()
+_cookies_lock = threading.Lock()
 
 # 60-second in-memory metadata cache to prevent redundant extract_info calls
 _INFO_CACHE: dict[str, Tuple[float, dict]] = {}
 _INFO_CACHE_LOCK = threading.Lock()
 _CACHE_TTL_SECONDS = 60.0
+_MAX_CACHE_ENTRIES = 64
 
 
 def get_cached_or_extract_info(url: str, extra_opts: Optional[dict] = None) -> dict:
     """
     Retrieves video info dictionary from in-memory cache or extracts via yt-dlp.
     Cached for 60 seconds to eliminate redundant network extraction between pre-check and download.
+    Bounded to _MAX_CACHE_ENTRIES to protect 512MB RAM on Render Free.
     """
     now = time.time()
     with _INFO_CACHE_LOCK:
@@ -986,13 +1213,17 @@ def get_cached_or_extract_info(url: str, extra_opts: Optional[dict] = None) -> d
         info = ydl.extract_info(url, download=False)
 
     with _INFO_CACHE_LOCK:
+        # Evict oldest entry if cache exceeds max size
+        if len(_INFO_CACHE) >= _MAX_CACHE_ENTRIES:
+            oldest_key = min(_INFO_CACHE.keys(), key=lambda k: _INFO_CACHE[k][0])
+            _INFO_CACHE.pop(oldest_key, None)
         _INFO_CACHE[url] = (time.time(), info)
 
     return info
 
 
 def get_active_downloads_count() -> int:
-    """Returns the number of currently active download jobs."""
+    """Returns the number of currently active media download jobs."""
     with _active_downloads_lock:
         return _active_downloads_count
 
@@ -1046,21 +1277,29 @@ def check_download_feasibility(
 ) -> Tuple[bool, str, Optional[str]]:
     """
     Pre-flight check before initiating heavy file downloads.
-    1. Checks server limits (FFmpeg, active download semaphore).
-    2. Checks video accessibility (extracts/uses cached metadata, detects private/429/403).
+    1. Checks server limits (FFmpeg, active download semaphore, max height cap).
+    2. Checks video accessibility (extracts/uses cached metadata, detects private/429/403/live/duration).
     3. Checks format/quality availability (verifies video height <= requested quality).
     Returns: (is_ok: bool, message: str, title: Optional[str])
     """
-    # 1. Server constraints - cheap
+    # 1. Server constraints - cheap fail-fast checks
+    if kind == "video" and quality == "1080p" and settings.MAX_VIDEO_HEIGHT and settings.MAX_VIDEO_HEIGHT < 1080:
+        return (
+            False,
+            f"Качество 1080p отключено из-за ограничения памяти сервера (512 МБ RAM). "
+            f"Максимальное допустимое разрешение: {settings.MAX_VIDEO_HEIGHT}p.",
+            None,
+        )
+
     if not get_ffmpeg_path() and (kind == "video" or format_str == "mp3"):
         return False, "FFmpeg не установлен на сервере. Слияние аудио и видео невозможно.", None
 
     if kind in ("video", "audio") and get_active_downloads_count() >= settings.MAX_CONCURRENT_DOWNLOADS:
         return (
             False,
-            f"Сервер занят другой загрузкой. Из-за лимита памяти (512 МБ) "
-            f"загрузки выполняются строго по очереди. Попробуйте через несколько минут.",
-            None
+            "Сервер занят другой загрузкой. Из-за лимита памяти (512 МБ) "
+            "загрузки выполняются строго по очереди. Попробуйте через несколько минут.",
+            None,
         )
 
     # 2. Real video accessibility check - uses 60s in-memory cache
@@ -1079,6 +1318,22 @@ def check_download_feasibility(
         return False, f"Ошибка проверки видео: {sanitize_error_message(e)}", None
 
     title = info.get("title", "")
+
+    # Check live stream / upcoming status
+    if info.get("is_live"):
+        return False, "Это видео является прямым эфиром (Live stream). Скачивание станет доступно после завершения трансляции.", title
+    if info.get("live_status") == "is_upcoming":
+        return False, "Это видео является запланированной премьерой. Скачивание пока недоступно.", title
+
+    # Check duration limit
+    duration = info.get("duration") or 0
+    if duration > settings.MAX_DURATION_SECONDS:
+        max_hours = settings.MAX_DURATION_SECONDS // 3600
+        return (
+            False,
+            f"Длительность видео ({format_duration(duration)}) превышает допустимый лимит сервера ({max_hours} ч).",
+            title,
+        )
 
     # 3. Check requested quality availability
     if kind == "video" and quality:
@@ -1105,6 +1360,8 @@ def check_download_feasibility(
 def _build_format_selector(quality: str, max_height_cap: Optional[int] = None) -> str:
     """
     Builds a robust yt-dlp format selector with strict downward cascading.
+    Prioritizes H.264 (avc1) + AAC (m4a) for instant low-RAM MP4 stream-copy merging on Render Free,
+    then falls back to any codec within the height cap.
     Guarantees no trailing unconstrained '/best' or unconstrained '/worst' that could pick 4K/1080p.
     Enforces max_height_cap (e.g. 720p for Render Free 512MB RAM).
     """
@@ -1117,12 +1374,13 @@ def _build_format_selector(quality: str, max_height_cap: Optional[int] = None) -
             target_h = max_height_cap
 
     if target_h is None:
-        return "bestvideo+bestaudio/best"
+        return "bestvideo[vcodec^=avc]+bestaudio[ext=m4a]/bestvideo+bestaudio/best"
 
     # Strictly under target_h: no branch can exceed target_h
     steps = [h for h in (1080, 720, 480, 360) if h <= target_h]
     parts = []
     for h in steps:
+        parts.append(f"bestvideo[height<={h}][vcodec^=avc]+bestaudio[ext=m4a]")
         parts.append(f"bestvideo[height<={h}]+bestaudio")
         parts.append(f"best[height<={h}]")
     # worst is also strictly bounded by target_h - otherwise it could pick 4K
@@ -1145,7 +1403,7 @@ def get_ffmpeg_path() -> Optional[str]:
 
 def sanitize_filename(name: str, max_len: int = 80) -> str:
     """Removes invalid characters and restricts length for safe filesystem use."""
-    name = re.sub(r'[\\/:*?"<>|]', '', name)
+    name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', '', name or "")
     name = re.sub(r'\s+', '_', name.strip())
     clean = name.strip("._-")
     return clean[:max_len] if clean else "video"
@@ -1177,18 +1435,62 @@ def format_duration(seconds: Optional[int | float]) -> str:
     return f"{minutes:02d}:{secs:02d}"
 
 
+def _prepare_writable_cookiefile() -> Optional[str]:
+    """
+    Ensures yt-dlp always receives a WRITABLE cookiefile path inside STORAGE_DIR.
+    Prevents 'OSError: [Errno 30] Read-only file system' when COOKIES_FILE is mounted
+    read-only (e.g. Render Secret Files at /etc/secrets/cookies.txt or Docker :ro volumes),
+    because yt-dlp writes updated session cookies back to cookiefile on exit.
+    """
+    runtime_cookies = settings.STORAGE_DIR / "runtime_cookies.txt"
+
+    with _cookies_lock:
+        if settings.COOKIES_FILE and os.path.exists(settings.COOKIES_FILE):
+            try:
+                src_path = Path(settings.COOKIES_FILE).resolve()
+                if src_path != runtime_cookies.resolve():
+                    # Copy if runtime_cookies doesn't exist or source was updated
+                    if not runtime_cookies.exists() or src_path.stat().st_mtime > runtime_cookies.stat().st_mtime:
+                        shutil.copyfile(src_path, runtime_cookies)
+                return str(runtime_cookies)
+            except Exception as e:
+                logger.warning(f"Could not copy COOKIES_FILE to writable storage: {e}")
+                return settings.COOKIES_FILE
+
+        elif settings.COOKIES_TEXT:
+            try:
+                raw_text = settings.COOKIES_TEXT.strip()
+                # Normalize escaped newlines often pasted into cloud dashboard env vars
+                if "\\n" in raw_text and "\n" not in raw_text:
+                    raw_text = raw_text.replace("\\n", "\n")
+                if not raw_text.startswith("# Netscape HTTP Cookie File"):
+                    raw_text = "# Netscape HTTP Cookie File\n" + raw_text
+                if not runtime_cookies.exists() or runtime_cookies.read_text(encoding="utf-8", errors="ignore").strip() != raw_text.strip():
+                    runtime_cookies.write_text(raw_text + "\n", encoding="utf-8")
+                return str(runtime_cookies)
+            except Exception as e:
+                logger.warning(f"Could not write COOKIES_TEXT to runtime_cookies.txt: {e}")
+
+    return None
+
+
 def get_ydl_base_opts(extra_opts: Optional[dict] = None) -> dict:
-    """Constructs base yt-dlp options including proxy, cookies, retries, and timeouts."""
+    """Constructs base yt-dlp options including proxy, cookies, retries, single-thread FFmpeg, and timeouts."""
     opts = {
         "quiet": True,
         "no_warnings": True,
         "nocheckcertificate": True,
         "noplaylist": True,
         "socket_timeout": settings.YTDLP_TIMEOUT_SECONDS,
-        "retries": 10,
-        "fragment_retries": 10,
+        "retries": 5,
+        "fragment_retries": 5,
         "continuedl": True,
+        "nopart": True,  # Avoid extra .part rename overhead on container tmpfs
         "http_chunk_size": 10485760,  # 10MB chunk size prevents YouTube throttling
+        # Limit FFmpeg to 1 thread to prevent 8-16 core host threadpool RAM spikes on Render Free (512MB)
+        "postprocessor_args": {
+            "ffmpeg": ["-threads", "1"],
+        },
         "extractor_args": {
             "youtube": {
                 # Using mweb, web, and tv (avoiding ios which requires strict po_token)
@@ -1204,14 +1506,10 @@ def get_ydl_base_opts(extra_opts: Optional[dict] = None) -> dict:
     if settings.PROXY_URL:
         opts["proxy"] = settings.PROXY_URL
 
-    # Authentication & Cookies support (fixes private, age-restricted, and bot check issues)
-    if settings.COOKIES_FILE and os.path.exists(settings.COOKIES_FILE):
-        opts["cookiefile"] = settings.COOKIES_FILE
-    elif settings.COOKIES_TEXT:
-        cookies_path = settings.STORAGE_DIR / "cookies.txt"
-        if not cookies_path.exists():
-            cookies_path.write_text(settings.COOKIES_TEXT.strip(), encoding="utf-8")
-        opts["cookiefile"] = str(cookies_path)
+    # Authentication & Cookies support (writable runtime copy prevents Read-Only FS crash)
+    writable_cookiefile = _prepare_writable_cookiefile()
+    if writable_cookiefile:
+        opts["cookiefile"] = writable_cookiefile
     elif settings.COOKIES_FROM_BROWSER:
         opts["cookiesfrombrowser"] = (settings.COOKIES_FROM_BROWSER, None, None, None)
 
@@ -1225,6 +1523,52 @@ def get_ydl_base_opts(extra_opts: Optional[dict] = None) -> dict:
     return opts
 
 
+def _raise_for_ydl_error(e: Exception, context_action: str = "обработке видео"):
+    """Translates yt-dlp exceptions into user-friendly HTTPExceptions with proper status codes."""
+    error_msg = sanitize_error_message(e)
+    if "429" in error_msg or "Too Many Requests" in error_msg:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "YouTube заблокировал IP-адрес сервера (HTTP 429 Too Many Requests). "
+                "Для работы на серверах хостинга требуется настроить PROXY_URL или COOKIES в .env."
+            )
+        )
+    elif "Private video" in error_msg or "Sign in" in error_msg or "confirm you're not a bot" in error_msg:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Видео требует авторизации YouTube (приватное видео, возрастное ограничение 18+ "
+                "или проверка бота 'Sign in to confirm you're not a bot'). "
+                "Для доступа подключите cookies вашего аккаунта (укажите COOKIES_FILE, COOKIES_TEXT "
+                "или COOKIES_FROM_BROWSER в настройках .env сервера)."
+            )
+        )
+    elif "Requested format is not available" in error_msg:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Видео недоступно в запрошенном качестве (лимит сервера ≤{settings.MAX_VIDEO_HEIGHT}p) "
+                "или YouTube ограничил отдачу потоков для данного региона."
+            )
+        )
+    elif "File is larger than max-filesize" in error_msg:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Размер видеопотока превышает допустимый лимит сервера ({settings.MAX_FILE_SIZE_MB} МБ)."
+        )
+    elif "Video unavailable" in error_msg:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Видео недоступно, удалено или заблокировано правообладателем."
+        )
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Ошибка yt-dlp при {context_action}: {error_msg}"
+        )
+
+
 def extract_video_metadata(url: str) -> AnalyzeResponse:
     """
     Extracts complete metadata, available formats, estimated sizes,
@@ -1233,44 +1577,7 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
     try:
         meta = get_cached_or_extract_info(url)
     except yt_dlp.utils.DownloadError as e:
-        error_msg = sanitize_error_message(e)
-        if "429" in error_msg:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=(
-                    "YouTube заблокировал IP-адрес сервера (HTTP 429 Too Many Requests). "
-                    "Для работы на серверах хостинга требуется настроить PROXY_URL в .env."
-                )
-            )
-        elif "Private video" in error_msg or "Sign in" in error_msg:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=(
-                    "Видео требует авторизации YouTube (приватное видео, возрастное ограничение 18+ "
-                    "или проверка бота 'Sign in to confirm you're not a bot'). "
-                    "Для доступа подключите cookies вашего аккаунта (укажите COOKIES_FILE, COOKIES_TEXT "
-                    "или COOKIES_FROM_BROWSER в настройках .env сервера)."
-                )
-            )
-        elif "Requested format is not available" in error_msg:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                    "Запрошенный формат недоступен. Это часто происходит, если видео является прямой "
-                    "трансляцией (Live), запланированной премьерой или YouTube ограничил отдачу форматов "
-                    "для данного региона/клиента."
-                )
-            )
-        elif "Video unavailable" in error_msg:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Видео недоступно, удалено или заблокировано правообладателем."
-            )
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Ошибка yt-dlp при анализе видео: {error_msg}"
-            )
+        _raise_for_ydl_error(e, "анализе видео")
     except Exception as e:
         sanitized_err = sanitize_error_message(e)
         logger.error(f"Unexpected extraction error for {url}: {sanitized_err}", exc_info=True)
@@ -1307,10 +1614,15 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="YouTube не вернул доступных форматов для данного видео (возможно, трансляция ещё обрабатывается, видео заблокировано в регионе или требует авторизации)."
             )
+
+    available_heights = set()
     for f in formats:
         f_id = str(f.get("format_id", ""))
         ext = f.get("ext", "mp4")
-        res = f.get("resolution") or (f"{f.get('width')}x{f.get('height')}" if f.get('width') else "audio only")
+        h = f.get("height")
+        if h and isinstance(h, int) and h > 0:
+            available_heights.add(h)
+        res = f.get("resolution") or (f"{f.get('width')}x{h}" if f.get('width') else "audio only")
         fps = f.get("fps")
         filesize = f.get("filesize") or f.get("filesize_approx")
         vcodec = f.get("vcodec") if f.get("vcodec") != "none" else None
@@ -1334,28 +1646,34 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
     # 2. Compute audio estimated size
     # Average audio stream is ~128-160 kbps = 20 KB/s
     audio_est_bytes = duration * (160 * 1024 / 8) if duration > 0 else 0
+    encoded_url = urllib.parse.quote(url, safe="")
 
-    # 3. Build preset Video Options: 1080p, 720p, 480p, 360p, best
+    # 3. Build preset Video Options: best, 1080p, 720p, 480p, 360p
+    server_cap = settings.MAX_VIDEO_HEIGHT or 1080
     if settings.MAX_VIDEO_HEIGHT and settings.MAX_VIDEO_HEIGHT < 1080:
         quality_specs = [
-            ("best", f"Наилучшее доступное качество (до {settings.MAX_VIDEO_HEIGHT}p, Render Free)", settings.MAX_VIDEO_HEIGHT),
-            ("1080p", f"Full HD 1080p (MP4) — недоступно (лимит {settings.MAX_VIDEO_HEIGHT}p на сервере)", 1080),
-            ("720p", "HD 720p (MP4)", 720),
-            ("480p", "SD 480p (MP4)", 480),
-            ("360p", "Низкое 360p (MP4)", 360),
+            ("best", f"Наилучшее доступное качество (до {settings.MAX_VIDEO_HEIGHT}p, Render Free)", settings.MAX_VIDEO_HEIGHT, True),
+            ("1080p", f"Full HD 1080p (MP4) — отключено (лимит {settings.MAX_VIDEO_HEIGHT}p на сервере)", 1080, False),
+            ("720p", "HD 720p (MP4)", 720, True),
+            ("480p", "SD 480p (MP4)", 480, True),
+            ("360p", "Низкое 360p (MP4)", 360, True),
         ]
     else:
         quality_specs = [
-            ("best", "Наилучшее доступное качество (Original/Best)", None),
-            ("1080p", "Full HD 1080p (MP4)", 1080),
-            ("720p", "HD 720p (MP4)", 720),
-            ("480p", "SD 480p (MP4)", 480),
-            ("360p", "Низкое 360p (MP4)", 360),
+            ("best", "Наилучшее доступное качество (Original/Best)", None, True),
+            ("1080p", "Full HD 1080p (MP4)", 1080, True),
+            ("720p", "HD 720p (MP4)", 720, True),
+            ("480p", "SD 480p (MP4)", 480, True),
+            ("360p", "Низкое 360p (MP4)", 360, True),
         ]
 
     video_options: list[VideoOption] = []
-    for q_key, q_label, max_h in quality_specs:
-        # Find matching formats to estimate combined size
+    for q_key, q_label, max_h, is_allowed_by_server in quality_specs:
+        # Check if any video stream exists at or below the requested cap
+        effective_cap = max_h or server_cap
+        has_compatible_stream = (not available_heights) or any(0 < h <= effective_cap for h in available_heights)
+        is_available = bool(is_allowed_by_server and has_compatible_stream)
+
         best_match_size = None
         for f in formats:
             h = f.get("height")
@@ -1365,9 +1683,8 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
                     best_match_size = f_size
 
         if not best_match_size and duration > 0:
-            # Fallback estimation based on typical bitrates
             bitrate_map = {1080: 3500, 720: 2000, 480: 1000, 360: 600}
-            target_kbps = bitrate_map.get(max_h, 4500) if max_h else 4500
+            target_kbps = bitrate_map.get(max_h, 2500) if max_h else 2500
             best_match_size = duration * (target_kbps * 1024 / 8)
 
         total_bytes = (best_match_size or 0) + (audio_est_bytes if max_h else 0)
@@ -1379,14 +1696,16 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
                 label=q_label,
                 ext="mp4",
                 filesize_approx_mb=total_mb,
-                filesize_str=format_bytes(total_bytes) if total_bytes else "Размер уточняется",
-                download_url=f"/api/download/video?url={url}&quality={q_key}",
+                filesize_str=format_bytes(total_bytes) if is_available and total_bytes else ("Недоступно" if not is_available else "Размер уточняется"),
+                download_url=f"/api/download/video?url={encoded_url}&quality={q_key}",
+                available=is_available,
             )
         )
 
     # 4. Build preset Audio Options: MP3 (320k) and M4A
     mp3_bytes = duration * (320 * 1024 / 8) if duration > 0 else None
     m4a_bytes = duration * (128 * 1024 / 8) if duration > 0 else None
+    ffmpeg_ok = bool(get_ffmpeg_path())
 
     audio_options: list[AudioOption] = [
         AudioOption(
@@ -1395,7 +1714,8 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
             bitrate_kbps=320,
             filesize_approx_mb=round(mp3_bytes / (1024 * 1024), 1) if mp3_bytes else None,
             filesize_str=format_bytes(mp3_bytes) if mp3_bytes else "Размер уточняется",
-            download_url=f"/api/download/audio?url={url}&format=mp3",
+            download_url=f"/api/download/audio?url={encoded_url}&format=mp3",
+            available=ffmpeg_ok,
         ),
         AudioOption(
             format="m4a",
@@ -1403,7 +1723,8 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
             bitrate_kbps=128,
             filesize_approx_mb=round(m4a_bytes / (1024 * 1024), 1) if m4a_bytes else None,
             filesize_str=format_bytes(m4a_bytes) if m4a_bytes else "Размер уточняется",
-            download_url=f"/api/download/audio?url={url}&format=m4a",
+            download_url=f"/api/download/audio?url={encoded_url}&format=m4a",
+            available=True,
         ),
     ]
 
@@ -1414,30 +1735,34 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
     # Manual subtitles first
     manual_subs = meta.get("subtitles") or {}
     for lang, track_list in manual_subs.items():
+        if lang == "live_chat":
+            continue
         name = track_list[0].get("name", lang) if track_list else lang
         seen_langs.add(lang)
+        encoded_lang = urllib.parse.quote(lang, safe="")
         subtitle_options.append(
             SubtitleOption(
                 lang=lang,
                 name=f"{name} (ручные)",
                 is_auto=False,
-                txt_url=f"/api/download/transcript?url={url}&lang={lang}&format=txt",
-                srt_url=f"/api/download/transcript?url={url}&lang={lang}&format=srt",
+                txt_url=f"/api/download/transcript?url={encoded_url}&lang={encoded_lang}&format=txt",
+                srt_url=f"/api/download/transcript?url={encoded_url}&lang={encoded_lang}&format=srt",
             )
         )
 
     # Automatic captions next
     auto_subs = meta.get("automatic_captions") or {}
     for lang, track_list in auto_subs.items():
-        if lang not in seen_langs:
+        if lang not in seen_langs and lang != "live_chat":
             name = track_list[0].get("name", lang) if track_list else lang
+            encoded_lang = urllib.parse.quote(lang, safe="")
             subtitle_options.append(
                 SubtitleOption(
                     lang=lang,
                     name=f"{name} (автогенерация)",
                     is_auto=True,
-                    txt_url=f"/api/download/transcript?url={url}&lang={lang}&format=txt",
-                    srt_url=f"/api/download/transcript?url={url}&lang={lang}&format=srt",
+                    txt_url=f"/api/download/transcript?url={encoded_url}&lang={encoded_lang}&format=txt",
+                    srt_url=f"/api/download/transcript?url={encoded_url}&lang={encoded_lang}&format=srt",
                 )
             )
 
@@ -1450,15 +1775,15 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
     return AnalyzeResponse(
         id=meta.get("id", ""),
         title=meta.get("title", "Без названия"),
-        channel=meta.get("channel", "Неизвестный канал"),
+        channel=meta.get("channel") or meta.get("uploader") or "Неизвестный канал",
         channel_url=meta.get("channel_url") or meta.get("uploader_url"),
-        duration=duration,
+        duration=int(duration),
         duration_str=format_duration(duration),
         upload_date=formatted_date,
         view_count=meta.get("view_count"),
         thumbnail=meta.get("thumbnail"),
         original_url=url,
-        description=meta.get("description", "")[:1500],
+        description=(meta.get("description") or "")[:1500],
         video_options=video_options,
         audio_options=audio_options,
         subtitle_options=subtitle_options,
@@ -1498,12 +1823,13 @@ def download_video_file(url: str, quality: str = "720p") -> Tuple[Path, str, str
         job_dir.mkdir(parents=True, exist_ok=True)
 
         fmt = _build_format_selector(quality, settings.MAX_VIDEO_HEIGHT)
-        out_template = str(job_dir / "%(title)s_%(resolution)s.%(ext)s")
+        out_template = str(job_dir / "video_%(height)sp.%(ext)s")
 
         ydl_opts = get_ydl_base_opts({
             "format": fmt,
             "outtmpl": out_template,
             "merge_output_format": "mp4",
+            "max_filesize": settings.MAX_FILE_SIZE_MB * 1024 * 1024,
         })
 
         try:
@@ -1512,17 +1838,7 @@ def download_video_file(url: str, quality: str = "720p") -> Tuple[Path, str, str
                 title = sanitize_filename(info.get("title", "video"))
         except yt_dlp.utils.DownloadError as e:
             shutil.rmtree(job_dir, ignore_errors=True)
-            sanitized_err = sanitize_error_message(e)
-            if "Requested format is not available" in str(e):
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=f"Видео недоступно в качестве ≤{settings.MAX_VIDEO_HEIGHT}p."
-                )
-            logger.error(f"Error downloading video {url} [{quality}]: {sanitized_err}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Не удалось скачать видео: {sanitized_err}"
-            )
+            _raise_for_ydl_error(e, f"скачивании видео ({quality})")
         except Exception as e:
             shutil.rmtree(job_dir, ignore_errors=True)
             sanitized_err = sanitize_error_message(e)
@@ -1542,9 +1858,8 @@ def download_video_file(url: str, quality: str = "720p") -> Tuple[Path, str, str
             )
 
         # Locate generated output file
-        downloaded_files = [f for f in job_dir.glob("*.mp4")]
+        downloaded_files = [f for f in job_dir.glob("*.mp4") if f.is_file()]
         if not downloaded_files:
-            # Fallback search for any media file
             downloaded_files = [f for f in job_dir.iterdir() if f.is_file()]
 
         if not downloaded_files:
@@ -1588,12 +1903,13 @@ def download_audio_file(url: str, audio_format: str = "mp3") -> Tuple[Path, str,
         job_dir = settings.STORAGE_DIR / unique_job_id
         job_dir.mkdir(parents=True, exist_ok=True)
 
-        out_template = str(job_dir / "%(title)s.%(ext)s")
+        out_template = str(job_dir / "audio.%(ext)s")
 
         if audio_format.lower() == "mp3":
             ydl_opts = get_ydl_base_opts({
-                "format": "bestaudio/best",
+                "format": "bestaudio[ext=m4a]/bestaudio/best",
                 "outtmpl": out_template,
+                "max_filesize": settings.MAX_FILE_SIZE_MB * 1024 * 1024,
                 "postprocessors": [{
                     "key": "FFmpegExtractAudio",
                     "preferredcodec": "mp3",
@@ -1606,6 +1922,7 @@ def download_audio_file(url: str, audio_format: str = "mp3") -> Tuple[Path, str,
             ydl_opts = get_ydl_base_opts({
                 "format": "bestaudio[ext=m4a]/bestaudio/best",
                 "outtmpl": out_template,
+                "max_filesize": settings.MAX_FILE_SIZE_MB * 1024 * 1024,
             })
             expected_ext = ".m4a"
             mime_type = "audio/mp4"
@@ -1614,6 +1931,9 @@ def download_audio_file(url: str, audio_format: str = "mp3") -> Tuple[Path, str,
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 title = sanitize_filename(info.get("title", "audio"))
+        except yt_dlp.utils.DownloadError as e:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            _raise_for_ydl_error(e, f"скачивании аудио ({audio_format})")
         except Exception as e:
             shutil.rmtree(job_dir, ignore_errors=True)
             sanitized_err = sanitize_error_message(e)
@@ -1624,7 +1944,7 @@ def download_audio_file(url: str, audio_format: str = "mp3") -> Tuple[Path, str,
             )
 
         # Locate generated output file
-        downloaded_files = [f for f in job_dir.glob(f"*{expected_ext}")]
+        downloaded_files = [f for f in job_dir.glob(f"*{expected_ext}") if f.is_file()]
         if not downloaded_files:
             downloaded_files = [f for f in job_dir.iterdir() if f.is_file()]
 
@@ -1636,14 +1956,83 @@ def download_audio_file(url: str, audio_format: str = "mp3") -> Tuple[Path, str,
             )
 
         target_file = downloaded_files[0]
+        file_size_mb = target_file.stat().st_size / (1024 * 1024)
+        if file_size_mb > settings.MAX_FILE_SIZE_MB:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"Размер аудиофайла ({file_size_mb:.1f} МБ) превышает лимит сервера ({settings.MAX_FILE_SIZE_MB} МБ)."
+            )
+
         download_filename = f"{title}.{audio_format.lower()}"
         return target_file, download_filename, mime_type
 
 
+def vtt_to_srt(vtt_content: str) -> str:
+    """
+    Pure-Python converter from WebVTT (.vtt) to standard SubRip (.srt).
+    Avoids spawning an FFmpeg child process on Render Free 512MB RAM.
+    """
+    blocks = []
+    current_lines = []
+    current_ts = None
+
+    for raw_line in vtt_content.splitlines():
+        line = raw_line.strip()
+        if not line:
+            if current_ts and current_lines:
+                blocks.append((current_ts, "\n".join(current_lines)))
+            current_ts = None
+            current_lines = []
+            continue
+
+        # Skip WEBVTT header and metadata lines
+        if (
+            line.startswith("WEBVTT")
+            or line.startswith("Kind:")
+            or line.startswith("Language:")
+            or line.startswith("Style:")
+            or line.startswith("NOTE")
+        ):
+            continue
+
+        # Match timestamp line: 00:00:01.000 --> 00:00:04.000 (or MM:SS.000)
+        if "-->" in line and re.search(r"\d{2}:\d{2}", line):
+            parts = line.split("-->")
+            if len(parts) >= 2:
+                start_raw = parts[0].strip().split()[0].replace(".", ",")
+                end_raw = parts[1].strip().split()[0].replace(".", ",")
+                if start_raw.count(":") == 1:
+                    start_raw = "00:" + start_raw
+                if end_raw.count(":") == 1:
+                    end_raw = "00:" + end_raw
+                current_ts = f"{start_raw} --> {end_raw}"
+            continue
+
+        # Skip pure cue numeric identifiers before timestamp
+        if current_ts is None and re.match(r"^\d+$", line):
+            continue
+
+        if current_ts:
+            clean = re.sub(r"<[^>]+>", "", line).strip()
+            clean = html.unescape(clean)
+            if clean and (not current_lines or clean != current_lines[-1]):
+                current_lines.append(clean)
+
+    if current_ts and current_lines:
+        blocks.append((current_ts, "\n".join(current_lines)))
+
+    srt_out = []
+    for idx, (ts, text) in enumerate(blocks, start=1):
+        srt_out.append(f"{idx}\n{ts}\n{text}")
+    return "\n\n".join(srt_out) if srt_out else vtt_content
+
+
 def srt_to_clean_txt(srt_content: str) -> str:
     """
-    Cleans an SRT string into pure legible text:
-    removes numeric indexes, timestamps, HTML tags, and duplicate consecutive lines.
+    Cleans an SRT or WebVTT string into pure legible text:
+    removes WEBVTT headers, numeric indexes, timestamps, HTML tags, entities,
+    and duplicate consecutive lines.
     Preserves natural repetition of lyrics and dialogue while removing rolling caption artifacts.
     """
     lines = []
@@ -1652,14 +2041,24 @@ def srt_to_clean_txt(srt_content: str) -> str:
         line = raw_line.strip()
         if not line:
             continue
+        # Skip WebVTT headers and metadata
+        if (
+            line.startswith("WEBVTT")
+            or line.startswith("Kind:")
+            or line.startswith("Language:")
+            or line.startswith("Style:")
+            or line.startswith("NOTE")
+        ):
+            continue
         # Skip numeric index lines
         if re.match(r"^\d+$", line):
             continue
-        # Skip timestamp lines (00:00:01,000 --> 00:00:04,000)
-        if re.match(r"\d{2}:\d{2}:\d{2}", line):
+        # Skip timestamp lines (00:00:01,000 --> 00:00:04,000 or 00:01.000 --> 00:04.000)
+        if "-->" in line or re.match(r"^\d{2}:\d{2}(:\d{2})?[.,]\d{3}", line):
             continue
-        # Remove HTML-like markup (font, b, i, color, etc.)
+        # Remove HTML-like markup and inline VTT timing tags (<00:00:01.000>, <c>, <font>, etc.)
         clean = re.sub(r"<[^>]+>", "", line).strip()
+        clean = html.unescape(clean).strip()
         # Deduplicate ONLY consecutive identical lines (YouTube auto-subtitles rolling artifact),
         # preserving recurring phrases, songs, and dialogue throughout the video
         if clean and clean != prev_line:
@@ -1669,64 +2068,105 @@ def srt_to_clean_txt(srt_content: str) -> str:
     return "\n".join(lines)
 
 
+def _find_matching_sub_file(job_dir: Path, target_lang: str) -> Optional[Path]:
+    """Finds downloaded subtitle file matching target_lang first, then any .srt/.vtt candidate."""
+    exact_matches = (
+        list(job_dir.glob(f"*.{target_lang}.srt"))
+        + list(job_dir.glob(f"*.{target_lang}.vtt"))
+    )
+    if exact_matches:
+        return exact_matches[0]
+    all_candidates = list(job_dir.glob("*.srt")) + list(job_dir.glob("*.vtt"))
+    return all_candidates[0] if all_candidates else None
+
+
 def download_subtitles_file(url: str, lang: str = "ru", format_type: str = "txt") -> Tuple[Path, str, str]:
     """
-    Extracts subtitles (manual first, then auto) using yt-dlp.
+    Extracts subtitles (exact language manual first, then exact language auto, then fallback)
+    using yt-dlp. Uses a separate lightweight semaphore so transcript preview/download is not
+    blocked by long FFmpeg video downloads.
     Outputs clean .txt (without timestamps/duplicates) or standard .srt.
     Returns: (local_file_path, client_download_filename, mime_type)
     """
-    with DownloadSlot():
+    acquired = _subtitles_semaphore.acquire(blocking=True, timeout=15.0)
+    if not acquired:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Сервер перегружен запросами субтитров. Пожалуйста, повторите попытку через несколько секунд."
+        )
+
+    try:
         unique_job_id = f"subs_{uuid.uuid4().hex[:10]}"
         job_dir = settings.STORAGE_DIR / unique_job_id
         job_dir.mkdir(parents=True, exist_ok=True)
 
         out_template = str(job_dir / "subtitles")
+        found_sub: Optional[Path] = None
+        title = "subtitles"
 
-        # First attempt: manual subtitles
+        # Determine cached title if available to avoid extra metadata wait
+        with _INFO_CACHE_LOCK:
+            cached_entry = _INFO_CACHE.get(url)
+            if cached_entry:
+                title = sanitize_filename(cached_entry[1].get("title", "transcript"))
+
+        # Step 1: Exact requested language in manual subtitles
         ydl_opts_manual = get_ydl_base_opts({
             "skip_download": True,
             "writesubtitles": True,
-            "subtitleslangs": [lang, "ru", "en"],
-            "subtitlesformat": "srt",
+            "subtitleslangs": [lang],
+            "subtitlesformat": "srt/vtt/best",
             "outtmpl": out_template,
         })
-
-        found_srt = None
-        title = "subtitles"
-
         try:
             with yt_dlp.YoutubeDL(ydl_opts_manual) as ydl:
                 info = ydl.extract_info(url, download=True)
-                title = sanitize_filename(info.get("title", "transcript"))
+                if info and info.get("title"):
+                    title = sanitize_filename(info.get("title", "transcript"))
         except Exception as e:
-            logger.warning(f"Error checking manual subs: {sanitize_error_message(e)}")
+            logger.warning(f"Error checking manual subs [{lang}]: {sanitize_error_message(e)}")
 
-        # Check for manual subs file
-        srt_candidates = list(job_dir.glob("*.srt")) + list(job_dir.glob("*.vtt"))
-        if srt_candidates:
-            found_srt = srt_candidates[0]
+        found_sub = _find_matching_sub_file(job_dir, lang)
 
-        # Second attempt: auto-generated captions if manual not found
-        if not found_srt:
+        # Step 2: Exact requested language in automatic captions
+        if not found_sub:
             ydl_opts_auto = get_ydl_base_opts({
                 "skip_download": True,
                 "writeautomaticsub": True,
-                "subtitleslangs": [lang, "ru", "en"],
-                "subtitlesformat": "srt",
+                "subtitleslangs": [lang],
+                "subtitlesformat": "srt/vtt/best",
                 "outtmpl": out_template,
             })
             try:
                 with yt_dlp.YoutubeDL(ydl_opts_auto) as ydl:
                     info = ydl.extract_info(url, download=True)
-                    title = sanitize_filename(info.get("title", "transcript"))
+                    if info and info.get("title"):
+                        title = sanitize_filename(info.get("title", "transcript"))
             except Exception as e:
-                logger.warning(f"Error checking auto subs: {sanitize_error_message(e)}")
+                logger.warning(f"Error checking auto subs [{lang}]: {sanitize_error_message(e)}")
 
-            srt_candidates = list(job_dir.glob("*.srt")) + list(job_dir.glob("*.vtt"))
-            if srt_candidates:
-                found_srt = srt_candidates[0]
+            found_sub = _find_matching_sub_file(job_dir, lang)
 
-        if not found_srt:
+        # Step 3: Fallback to ru/en if default language was requested and not found directly
+        if not found_sub and lang in ("ru", "en"):
+            fallback_langs = ["ru", "en"]
+            ydl_opts_fallback = get_ydl_base_opts({
+                "skip_download": True,
+                "writesubtitles": True,
+                "writeautomaticsub": True,
+                "subtitleslangs": fallback_langs,
+                "subtitlesformat": "srt/vtt/best",
+                "outtmpl": out_template,
+            })
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts_fallback) as ydl:
+                    ydl.extract_info(url, download=True)
+            except Exception as e:
+                logger.warning(f"Error checking fallback subs: {sanitize_error_message(e)}")
+
+            found_sub = _find_matching_sub_file(job_dir, lang)
+
+        if not found_sub:
             shutil.rmtree(job_dir, ignore_errors=True)
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -1735,7 +2175,7 @@ def download_subtitles_file(url: str, lang: str = "ru", format_type: str = "txt"
 
         # Read raw subtitle content
         try:
-            content = found_srt.read_text(encoding="utf-8", errors="replace")
+            content = found_sub.read_text(encoding="utf-8", errors="replace")
         except Exception as e:
             shutil.rmtree(job_dir, ignore_errors=True)
             sanitized_err = sanitize_error_message(e)
@@ -1744,37 +2184,44 @@ def download_subtitles_file(url: str, lang: str = "ru", format_type: str = "txt"
                 detail=f"Ошибка чтения субтитров: {sanitized_err}"
             )
 
+        safe_lang = re.sub(r"[^a-zA-Z0-9_-]", "", lang) or "sub"
         if format_type.lower() == "txt":
             clean_text = srt_to_clean_txt(content)
-            txt_path = job_dir / f"{title}_{lang}.txt"
+            txt_path = job_dir / f"{title}_{safe_lang}.txt"
             txt_path.write_text(clean_text, encoding="utf-8")
-            return txt_path, f"{title}_{lang}.txt", "text/plain; charset=utf-8"
+            return txt_path, f"{title}_{safe_lang}.txt", "text/plain; charset=utf-8"
         else:  # srt
-            out_srt = job_dir / f"{title}_{lang}.srt"
-            if found_srt != out_srt:
-                found_srt.rename(out_srt)
-            return out_srt, f"{title}_{lang}.srt", "text/plain; charset=utf-8"
+            out_srt = job_dir / f"{title}_{safe_lang}.srt"
+            if found_sub.suffix.lower() == ".vtt" or content.lstrip().startswith("WEBVTT"):
+                srt_text = vtt_to_srt(content)
+                out_srt.write_text(srt_text, encoding="utf-8")
+            elif found_sub != out_srt:
+                found_sub.rename(out_srt)
+            return out_srt, f"{title}_{safe_lang}.srt", "text/plain; charset=utf-8"
+    finally:
+        _subtitles_semaphore.release()
+```
 
-`
-
----
-
-### Файл: backend/tests/test_reliability.py
-
-`python
+#### Файл: `backend/tests/test_reliability.py`
+```python
 """
 Automated reliability and regression test suite for youtube-analyzer-web.
-Covers Render Free 512MB RAM protections:
+Covers Render Free 512MB RAM protections and core functionality:
 - Concurrency serialization (MAX_CONCURRENT_DOWNLOADS=1, 503 rejection)
-- Height capping and elimination of unconstrained /best and /worst
+- Height capping and elimination of unconstrained /best and /worst, with H.264 priority
 - Error message credential sanitization (no sensitive data leaks)
-- Pre-flight check endpoint (/api/check-download) with video accessibility
+- Pre-flight check endpoint (/api/check-download) with video accessibility, 1080p cap, live stream & duration guard
 - cgroup/RSS memory diagnostics (/api/health)
+- Cyrillic Content-Disposition latin-1 HTTP header safety
+- WebVTT to SRT conversion and clean TXT transcript extraction
+- Writable cookiefile copy for read-only mounts (/etc/secrets/cookies.txt)
+- Extended URL validation (query param order, music.youtube.com, shorts, live)
 """
 
 import os
 import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -1789,8 +2236,7 @@ from starlette.testclient import TestClient
 
 from backend.app.config import settings
 from backend.app.limiter import validate_youtube_url
-from backend.app.schemas import CheckDownloadResponse, HealthResponse
-from backend.app.main import app, get_process_rss_mb
+from backend.app.main import app, make_content_disposition
 from backend.app.services.cleanup import PROTECTED_FILENAMES
 from backend.app.services.youtube import (
     sanitize_error_message,
@@ -1798,6 +2244,9 @@ from backend.app.services.youtube import (
     DownloadSlot,
     get_active_downloads_count,
     check_download_feasibility,
+    srt_to_clean_txt,
+    vtt_to_srt,
+    _prepare_writable_cookiefile,
 )
 
 
@@ -1825,14 +2274,12 @@ class TestReliabilityAndSafety(unittest.TestCase):
     def test_format_selector_720p_capping(self):
         """Ensures 720p selector has NO unconstrained /best and NO unconstrained /worst."""
         selector = _build_format_selector("720p", max_height_cap=720)
-        # Every branch must have height <= 720
         parts = selector.split("/")
         for p in parts:
             self.assertTrue(
                 "height<=720" in p or "height<=480" in p or "height<=360" in p,
                 f"Part {p} violates height cap 720!"
             )
-        # Verify no unconstrained 'best' or 'worst' (must be qualified with [height<=...])
         self.assertIsNone(re.search(r'(^|/)best($|/)', selector))
         self.assertIsNone(re.search(r'(^|/)worst($|/)', selector))
         self.assertTrue(selector.endswith("worst[height<=720]"))
@@ -1877,6 +2324,15 @@ class TestReliabilityAndSafety(unittest.TestCase):
         url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PL12345"
         norm = validate_youtube_url(url)
         self.assertEqual(norm, "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+
+    def test_url_validation_non_first_v_param_and_music(self):
+        """Mobile share URLs with ?feature=shared&v=... and music.youtube.com must be accepted."""
+        url1 = "https://www.youtube.com/watch?feature=shared&v=dQw4w9WgXcQ"
+        url2 = "https://music.youtube.com/watch?v=dQw4w9WgXcQ&si=abcdef"
+        url3 = "youtu.be/dQw4w9WgXcQ?t=42"
+        self.assertEqual(validate_youtube_url(url1), "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        self.assertEqual(validate_youtube_url(url2), "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        self.assertEqual(validate_youtube_url(url3), "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
 
     def test_url_validation_playlist_rejection(self):
         """Pure playlist URL must be rejected with 400."""
@@ -1930,10 +2386,22 @@ class TestReliabilityAndSafety(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("Видео недоступно в качестве ≤720p", msg)
 
+    def test_check_download_feasibility_1080p_rejected_on_720p_cap(self):
+        """Pre-check immediately rejects 1080p when server MAX_VIDEO_HEIGHT is 720."""
+        with patch.object(settings, "MAX_VIDEO_HEIGHT", 720):
+            ok, msg, _ = check_download_feasibility(
+                url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                kind="video",
+                quality="1080p"
+            )
+            self.assertFalse(ok)
+            self.assertIn("1080p отключено", msg)
+
     # 6. Cleanup protected filenames
     def test_cleanup_protected_files(self):
-        """Ensures cookies.txt, .gitkeep, README.md are strictly protected."""
+        """Ensures cookies.txt, runtime_cookies.txt, .gitkeep, README.md are strictly protected."""
         self.assertIn("cookies.txt", PROTECTED_FILENAMES)
+        self.assertIn("runtime_cookies.txt", PROTECTED_FILENAMES)
         self.assertIn(".gitkeep", PROTECTED_FILENAMES)
         self.assertIn("README.md", PROTECTED_FILENAMES)
 
@@ -1963,141 +2431,1068 @@ class TestReliabilityAndSafety(unittest.TestCase):
         self.assertTrue(data["ok"])
         self.assertEqual(data["title"], "test_video")
 
+    # 9. Cyrillic Content-Disposition Latin-1 encoding safety
+    def test_content_disposition_cyrillic_latin1_safe(self):
+        """Ensures Cyrillic filenames do not crash Starlette latin-1 header encoding."""
+        header = make_content_disposition("Разбор_полетов_720p.mp4")
+        # Must encode cleanly in latin-1 without UnicodeEncodeError
+        encoded = header.encode("latin-1")
+        self.assertIsInstance(encoded, bytes)
+        self.assertIn("filename*=UTF-8''", header)
+
+    # 10. WebVTT cleaning and SRT conversion
+    def test_vtt_and_srt_cleaning(self):
+        """Ensures WEBVTT metadata, timestamps, HTML entities, and rolling duplicates are stripped."""
+        sample_vtt = (
+            "WEBVTT\n"
+            "Kind: captions\n"
+            "Language: ru\n\n"
+            "00:00:01.000 --> 00:00:03.500 align:start position:0%\n"
+            "<c>Привет</c> &amp; добро пожаловать!\n\n"
+            "00:00:03.500 --> 00:00:05.000\n"
+            "Привет &amp; добро пожаловать!\n"
+            "Вторая строка текста&#39;\n"
+        )
+        clean_txt = srt_to_clean_txt(sample_vtt)
+        self.assertEqual(clean_txt, "Привет & добро пожаловать!\nВторая строка текста'")
+
+        converted_srt = vtt_to_srt(sample_vtt)
+        self.assertIn("1\n00:00:01,000 --> 00:00:03,500\nПривет & добро пожаловать!", converted_srt)
+        self.assertNotIn("WEBVTT", converted_srt)
+
+    # 11. Writable runtime cookies from COOKIES_TEXT
+    def test_writable_cookies_from_text(self):
+        """Ensures COOKIES_TEXT is normalized and written to a writable file in STORAGE_DIR."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            with patch.object(settings, "STORAGE_DIR", tmp_path), \
+                 patch.object(settings, "COOKIES_FILE", ""), \
+                 patch.object(settings, "COOKIES_TEXT", ".youtube.com\\tTRUE\\t/\\tTRUE\\t0\\tSID\\t12345"):
+                cookie_file = _prepare_writable_cookiefile()
+                self.assertIsNotNone(cookie_file)
+                content = Path(cookie_file).read_text(encoding="utf-8")
+                self.assertTrue(content.startswith("# Netscape HTTP Cookie File"))
+                self.assertIn(".youtube.com", content)
+
 
 if __name__ == "__main__":
     unittest.main()
+```
 
-`
 
----
+### 3. Фронтенд (Vanilla JS, CSS3, HTML5)
 
-### Файл: docker-compose.yml
+#### Файл: `frontend/index.html`
+```html
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>YouTube Video Analyzer & Downloader</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="header-container">
+      <div class="logo">
+        <span class="logo-icon">▶</span>
+        <span class="logo-text">YT Analyzer <span class="badge">Web</span></span>
+      </div>
+      <div class="server-status" id="serverStatus">
+        <span class="status-indicator" id="serverStatusDot"></span>
+        <span class="status-text" id="serverStatusText">Проверка сервера...</span>
+      </div>
+    </div>
+  </header>
 
-`yaml
-services:
-  web:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: yt-analyzer-web
-    restart: unless-stopped
-    ports:
-      - "${PORT:-8000}:8000"
-    environment:
-      - HOST=0.0.0.0
-      - PORT=8000
-      - PROXY_URL=${PROXY_URL:-}
-      - COOKIES_FILE=${COOKIES_FILE:-}
-      - COOKIES_TEXT=${COOKIES_TEXT:-}
-      - COOKIES_FROM_BROWSER=${COOKIES_FROM_BROWSER:-}
-      - MAX_DURATION_SECONDS=${MAX_DURATION_SECONDS:-14400}
-      - MAX_FILE_SIZE_MB=${MAX_FILE_SIZE_MB:-1024}
-      - RATE_LIMIT_PER_MINUTE=${RATE_LIMIT_PER_MINUTE:-30}
-    env_file:
-      - path: .env
-        required: false
-    volumes:
-      - ./downloads:/app/downloads
-      - ./cookies.txt:/app/cookies.txt:ro
+  <main class="app-main">
+    <section class="hero-section">
+      <h1 class="hero-title">Анализ и скачивание видео с YouTube</h1>
+      <p class="hero-subtitle">Получайте метаданные, превью, транскрипты, видео и аудио MP3/M4A без рекламы и ожидания.</p>
 
-`
+      <form id="analyzeForm" class="search-form">
+        <div class="search-box">
+          <span class="search-icon">🔗</span>
+          <input 
+            type="text" 
+            id="urlInput" 
+            name="url" 
+            placeholder="Вставьте ссылку на видео (youtube.com/watch?v=... или youtu.be/...)" 
+            required 
+            autocomplete="off"
+            spellcheck="false"
+          >
+          <button type="button" id="clearBtn" class="clear-btn hidden" title="Очистить поле">✕</button>
+          <button type="button" id="pasteBtn" class="paste-btn" title="Вставить из буфера">
+            <span>Вставить</span>
+          </button>
+        </div>
+        <button type="submit" id="submitBtn" class="submit-btn">
+          <span class="btn-text">Анализировать</span>
+          <div class="spinner hidden" id="submitSpinner"></div>
+        </button>
+      </form>
 
----
+      <!-- Alert Box -->
+      <div id="alertBox" class="alert-box hidden" role="alert">
+        <div class="alert-icon">⚠️</div>
+        <div class="alert-content">
+          <h4 id="alertTitle" class="alert-title">Ошибка</h4>
+          <p id="alertDesc" class="alert-desc">Описание ошибки</p>
+        </div>
+        <button type="button" id="alertCloseBtn" class="alert-close">✕</button>
+      </div>
+    </section>
 
-### Файл: Dockerfile
+    <!-- Skeleton Loader -->
+    <section id="skeletonLoader" class="skeleton-section hidden">
+      <div class="card skeleton-card">
+        <div class="skeleton-thumb"></div>
+        <div class="skeleton-details">
+          <div class="skeleton-line title"></div>
+          <div class="skeleton-line meta"></div>
+          <div class="skeleton-line desc"></div>
+        </div>
+      </div>
+    </section>
 
-`dockerfile
-# Multi-stage/Slim production Dockerfile
-FROM python:3.11-slim
+    <!-- Result Section -->
+    <section id="resultSection" class="result-section hidden">
+      <!-- Video Overview Card -->
+      <div class="video-card card">
+        <div class="video-preview-wrapper">
+          <img id="videoThumb" class="video-thumb" src="" alt="Превью видео">
+          <span id="videoDuration" class="duration-badge">00:00</span>
+        </div>
+        <div class="video-info">
+          <h2 id="videoTitle" class="video-title">Название видео</h2>
+          
+          <div class="metadata-row">
+            <div class="meta-item">
+              <span class="meta-label">Канал:</span>
+              <a id="channelLink" href="#" target="_blank" rel="noopener noreferrer" class="meta-link">
+                <span id="channelName">Имя канала</span> ↗
+              </a>
+            </div>
+            <div class="meta-item">
+              <span class="meta-label">Опубликовано:</span>
+              <span id="uploadDate" class="meta-value">—</span>
+            </div>
+            <div class="meta-item">
+              <span class="meta-label">Просмотры:</span>
+              <span id="viewCount" class="meta-value">—</span>
+            </div>
+          </div>
 
-# Prevent Python from writing .pyc files and enable unbuffered logging
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    DEBIAN_FRONTEND=noninteractive \
-    PORT=8000 \
-    HOST=0.0.0.0
+          <div class="video-actions">
+            <a id="originalVideoLink" href="#" target="_blank" rel="noopener noreferrer" class="btn btn-secondary">
+              <span>Смотреть на YouTube</span> ↗
+            </a>
+            <button type="button" id="copyUrlBtn" class="btn btn-secondary">
+              <span>Скопировать ссылку</span>
+            </button>
+          </div>
 
-# Install system dependencies: ffmpeg for media merging/audio conversion, curl for healthchecks
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
-    curl \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+          <details class="description-accordion">
+            <summary>Описание видео</summary>
+            <p id="videoDescription" class="description-text"></p>
+          </details>
+        </div>
+      </div>
 
-# Create non-root application user for container security
-RUN groupadd -r appgroup && useradd -r -g appgroup -d /app -s /sbin/nologin appuser
+      <!-- Download Options Container -->
+      <div class="download-tabs card">
+        <div class="tabs-header">
+          <button type="button" class="tab-btn active" data-tab="videoTab">🎥 Видео (MP4)</button>
+          <button type="button" class="tab-btn" data-tab="audioTab">🎵 Аудио (MP3/M4A)</button>
+          <button type="button" class="tab-btn" data-tab="subtitlesTab">📝 Субтитры / Текст</button>
+          <button type="button" class="tab-btn" data-tab="formatsTab">⚙️ Все потоки</button>
+        </div>
 
-# Set working directory
-WORKDIR /app
+        <div class="tabs-content">
+          <!-- Video Tab -->
+          <div id="videoTab" class="tab-panel active">
+            <div class="options-grid" id="videoOptionsGrid">
+              <!-- Dynamically populated -->
+            </div>
+          </div>
 
-# Install Python requirements first (leveraging Docker layer cache)
-COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+          <!-- Audio Tab -->
+          <div id="audioTab" class="tab-panel">
+            <div class="options-grid" id="audioOptionsGrid">
+              <!-- Dynamically populated -->
+            </div>
+          </div>
 
-# Copy source code and static frontend
-COPY backend/ ./backend/
-COPY frontend/ ./frontend/
+          <!-- Subtitles Tab -->
+          <div id="subtitlesTab" class="tab-panel">
+            <div id="subtitlesContent" class="subtitles-container">
+              <!-- Dynamically populated -->
+            </div>
+          </div>
 
-# Create downloads folder and assign ownership to non-root user
-RUN mkdir -p /app/downloads && chown -R appuser:appgroup /app
+          <!-- Raw Formats Technical Tab -->
+          <div id="formatsTab" class="tab-panel">
+            <div class="table-responsive">
+              <table class="formats-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Формат</th>
+                    <th>Разрешение</th>
+                    <th>FPS</th>
+                    <th>Размер</th>
+                    <th>Видеокодек</th>
+                    <th>Аудиокодек</th>
+                    <th>Инфо</th>
+                  </tr>
+                </thead>
+                <tbody id="formatsTableBody">
+                  <!-- Dynamically populated -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
 
-# Switch to non-root user
-USER appuser
+  <!-- Modal for Transcript preview -->
+  <div id="transcriptModal" class="modal hidden">
+    <div class="modal-backdrop" id="modalBackdrop"></div>
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 id="modalTitle">Расшифровка субтитров</h3>
+        <button type="button" id="modalCloseBtn" class="modal-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="modalLoading" class="modal-loading hidden">
+          <div class="spinner"></div>
+          <span>Загрузка расшифровки...</span>
+        </div>
+        <textarea id="modalText" class="modal-textarea" readonly spellcheck="false"></textarea>
+      </div>
+      <div class="modal-footer">
+        <button type="button" id="modalCopyBtn" class="btn btn-secondary">Скопировать в буфер</button>
+        <button type="button" id="modalDownloadBtn" class="btn btn-primary">Скачать .txt</button>
+      </div>
+    </div>
+  </div>
 
-# Expose port (can be overridden by $PORT on Render/Railway/Fly.io)
-EXPOSE 8000
+  <!-- Toast Notification -->
+  <div id="toast" class="toast hidden"></div>
 
-# Container healthcheck
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD curl -f http://localhost:${PORT}/api/health || exit 1
+  <script src="app.js"></script>
+</body>
+</html>
+```
 
-# Launch production server
-CMD ["sh", "-c", "uvicorn backend.app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+#### Файл: `frontend/style.css`
+```css
+/* ==========================================================================
+   Modern Dark Theme Design System for YouTube Video Analyzer
+   ========================================================================== */
 
-`
+:root {
+  --bg-primary: #0f172a;
+  --bg-secondary: #1e293b;
+  --bg-tertiary: #334155;
+  --bg-input: #0f172a;
+  --card-bg: rgba(30, 41, 59, 0.7);
 
----
+  --text-primary: #f8fafc;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
 
-### Файл: fly.toml
+  --accent-red: #ef4444;
+  --accent-red-hover: #dc2626;
+  --accent-blue: #3b82f6;
+  --accent-blue-hover: #2563eb;
+  --accent-green: #10b981;
+  --accent-yellow: #f59e0b;
 
-`toml
-app = "yt-analyzer-web"
-primary_region = "fra"
+  --border-color: rgba(255, 255, 255, 0.08);
+  --border-focus: #3b82f6;
 
-[env]
-  MAX_CONCURRENT_DOWNLOADS = "1"
-  MAX_VIDEO_HEIGHT = "720"
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-full: 9999px;
 
-[build]
-  dockerfile = "Dockerfile"
+  --font-main: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
 
-[http_service]
-  internal_port = 8000
-  force_https = true
-  auto_stop_machines = true
-  auto_start_machines = true
-  min_machines_running = 0
-  processes = ["app"]
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.2), 0 2px 4px -1px rgba(0, 0, 0, 0.1);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.3), 0 4px 6px -2px rgba(0, 0, 0, 0.15);
+  --shadow-glow: 0 0 25px rgba(59, 130, 246, 0.25);
+}
 
-[[http_service.checks]]
-  grace_period = "10s"
-  interval = "30s"
-  method = "GET"
-  timeout = "5s"
-  path = "/api/health"
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
 
-[[vm]]
-  size = "shared-cpu-1x"
-  memory = "512mb"
+body {
+  font-family: var(--font-main);
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  min-height: 100vh;
+  line-height: 1.5;
+  display: flex;
+  flex-direction: column;
+  -webkit-font-smoothing: antialiased;
+}
 
-`
+/* Header */
+.app-header {
+  border-bottom: 1px solid var(--border-color);
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(12px);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
 
----
+.header-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 1rem 1.5rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
 
-### Файл: frontend/app.js
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-weight: 700;
+  font-size: 1.25rem;
+  letter-spacing: -0.02em;
+}
 
-`javascript
+.logo-icon {
+  color: var(--accent-red);
+  font-size: 1.4rem;
+  display: inline-flex;
+}
+
+.badge {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  background: var(--bg-tertiary);
+  color: var(--accent-blue);
+  padding: 0.2rem 0.5rem;
+  border-radius: var(--radius-sm);
+  vertical-align: middle;
+}
+
+.server-status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.status-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--text-muted);
+}
+
+.status-indicator.online {
+  background: var(--accent-green);
+  box-shadow: 0 0 8px var(--accent-green);
+}
+
+.status-indicator.offline {
+  background: var(--accent-red);
+}
+
+/* Main */
+.app-main {
+  flex: 1;
+  max-width: 1200px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 2.5rem 1.5rem 4rem;
+}
+
+/* Hero Section */
+.hero-section {
+  text-align: center;
+  max-width: 780px;
+  margin: 0 auto 3rem;
+}
+
+.hero-title {
+  font-size: 2.5rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  margin-bottom: 0.75rem;
+  background: linear-gradient(to right, #f8fafc, #94a3b8);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.hero-subtitle {
+  color: var(--text-secondary);
+  font-size: 1.1rem;
+  margin-bottom: 2rem;
+}
+
+/* Search Form */
+.search-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  background: var(--bg-secondary);
+  padding: 0.5rem;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-color);
+  box-shadow: var(--shadow-lg);
+  transition: all 0.2s ease;
+}
+
+.search-form:focus-within {
+  border-color: var(--border-focus);
+  box-shadow: var(--shadow-glow);
+}
+
+.search-box {
+  display: flex;
+  align-items: center;
+  position: relative;
+  background: var(--bg-input);
+  border-radius: var(--radius-md);
+  padding: 0 0.75rem;
+}
+
+.search-icon {
+  font-size: 1.1rem;
+  margin-right: 0.5rem;
+  color: var(--text-muted);
+}
+
+.search-box input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  font-size: 1rem;
+  padding: 0.85rem 0.5rem;
+  outline: none;
+}
+
+.search-box input::placeholder {
+  color: var(--text-muted);
+}
+
+.clear-btn, .paste-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0.4rem 0.6rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.85rem;
+  transition: all 0.15s ease;
+}
+
+.clear-btn:hover, .paste-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+}
+
+.submit-btn {
+  background: var(--accent-red);
+  color: #fff;
+  border: none;
+  font-weight: 600;
+  font-size: 1rem;
+  padding: 0.85rem 1.5rem;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+
+.submit-btn:hover {
+  background: var(--accent-red-hover);
+}
+
+.submit-btn:active {
+  transform: scale(0.98);
+}
+
+.submit-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Alert Box */
+.alert-box {
+  margin-top: 1.5rem;
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  border-radius: var(--radius-md);
+  padding: 1rem 1.25rem;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  text-align: left;
+}
+
+.alert-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--accent-red);
+  margin-bottom: 0.2rem;
+}
+
+.alert-desc {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.alert-close {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  margin-left: auto;
+}
+
+/* Card */
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  backdrop-filter: blur(8px);
+  padding: 1.5rem;
+  box-shadow: var(--shadow-md);
+}
+
+/* Video Card */
+.video-card {
+  display: grid;
+  grid-template-columns: 360px 1fr;
+  gap: 2rem;
+  margin-bottom: 2rem;
+}
+
+.video-preview-wrapper {
+  position: relative;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  aspect-ratio: 16 / 9;
+  background: #000;
+}
+
+.video-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.duration-badge {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  background: rgba(0, 0, 0, 0.8);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+}
+
+.video-info {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 1rem;
+}
+
+.video-title {
+  font-size: 1.4rem;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.metadata-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem;
+  font-size: 0.9rem;
+}
+
+.meta-label {
+  color: var(--text-muted);
+  margin-right: 0.3rem;
+}
+
+.meta-link {
+  color: var(--accent-blue);
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.meta-link:hover {
+  text-decoration: underline;
+}
+
+.video-actions {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  padding: 0.6rem 1rem;
+  border-radius: var(--radius-md);
+  border: none;
+  cursor: pointer;
+  text-decoration: none;
+  transition: all 0.15s ease;
+}
+
+.btn-primary {
+  background: var(--accent-blue);
+  color: #fff;
+}
+
+.btn-primary:hover {
+  background: var(--accent-blue-hover);
+}
+
+.btn-secondary {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.btn-secondary:hover {
+  background: #475569;
+}
+
+.description-accordion {
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+  border-top: 1px solid var(--border-color);
+  padding-top: 0.75rem;
+}
+
+.description-accordion summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.description-accordion summary:hover {
+  color: var(--text-secondary);
+}
+
+.description-text {
+  margin-top: 0.5rem;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  max-height: 180px;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  line-height: 1.6;
+}
+
+/* Download Tabs */
+.tabs-header {
+  display: flex;
+  gap: 0.5rem;
+  border-bottom: 1px solid var(--border-color);
+  padding-bottom: 0.75rem;
+  margin-bottom: 1.5rem;
+  overflow-x: auto;
+}
+
+.tab-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+  font-weight: 600;
+  padding: 0.6rem 1.1rem;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.tab-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+}
+
+.tab-btn.active {
+  color: #fff;
+  background: var(--accent-blue);
+}
+
+.tab-panel {
+  display: none;
+}
+
+.tab-panel.active {
+  display: block;
+}
+
+/* Options Grid */
+.options-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1rem;
+}
+
+.option-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 1.2rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 1rem;
+  transition: all 0.15s ease;
+}
+
+.option-card:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+
+.option-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.option-badge {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 0.2rem 0.5rem;
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: var(--accent-blue);
+}
+
+.option-size {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.option-title {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.download-stream-btn {
+  width: 100%;
+  background: var(--accent-blue);
+  color: #fff;
+  border: none;
+  font-weight: 600;
+  font-size: 0.9rem;
+  padding: 0.65rem 1rem;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  transition: background 0.15s ease;
+}
+
+.download-stream-btn:hover {
+  background: var(--accent-blue-hover);
+}
+
+.download-stream-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+/* Subtitles Grid */
+.subtitles-container {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.subtitle-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  padding: 0.85rem 1.25rem;
+  border-radius: var(--radius-md);
+}
+
+.subtitle-lang-info {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.subtitle-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+/* Raw Formats Table */
+.table-responsive {
+  overflow-x: auto;
+}
+
+.formats-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 0.85rem;
+}
+
+.formats-table th {
+  background: var(--bg-tertiary);
+  padding: 0.65rem 0.75rem;
+  color: var(--text-secondary);
+  font-weight: 600;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.formats-table td {
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+
+.formats-table tr:hover td {
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--text-primary);
+}
+
+/* Modal */
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+}
+
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(4px);
+}
+
+.modal-dialog {
+  position: relative;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  width: 100%;
+  max-width: 680px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--shadow-lg);
+  z-index: 210;
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.modal-header h3 {
+  font-size: 1.15rem;
+  font-weight: 700;
+}
+
+.modal-close {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 1.2rem;
+}
+
+.modal-body {
+  padding: 1.25rem 1.5rem;
+  overflow-y: auto;
+  flex: 1;
+  position: relative;
+}
+
+.modal-textarea {
+  width: 100%;
+  height: 320px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  padding: 0.75rem;
+  resize: none;
+  line-height: 1.5;
+  outline: none;
+}
+
+.modal-loading {
+  position: absolute;
+  inset: 0;
+  background: rgba(30, 41, 59, 0.9);
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal-footer {
+  padding: 1rem 1.5rem;
+  border-top: 1px solid var(--border-color);
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+}
+
+/* Spinner */
+.spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Skeleton Loading */
+.skeleton-card {
+  display: grid;
+  grid-template-columns: 360px 1fr;
+  gap: 2rem;
+  margin-bottom: 2rem;
+}
+
+.skeleton-thumb {
+  aspect-ratio: 16 / 9;
+  background: linear-gradient(90deg, #1e293b 25%, #334155 50%, #1e293b 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: var(--radius-md);
+}
+
+.skeleton-line {
+  background: linear-gradient(90deg, #1e293b 25%, #334155 50%, #1e293b 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: var(--radius-sm);
+  margin-bottom: 0.75rem;
+}
+
+.skeleton-line.title {
+  height: 28px;
+  width: 70%;
+}
+
+.skeleton-line.meta {
+  height: 16px;
+  width: 40%;
+}
+
+.skeleton-line.desc {
+  height: 80px;
+  width: 100%;
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+/* Toast */
+.toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--accent-blue);
+  box-shadow: var(--shadow-lg);
+  padding: 0.85rem 1.25rem;
+  border-radius: var(--radius-md);
+  font-size: 0.9rem;
+  font-weight: 500;
+  z-index: 300;
+  animation: fadeIn 0.2s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* Responsive */
+@media (max-width: 860px) {
+  .video-card, .skeleton-card {
+    grid-template-columns: 1fr;
+    gap: 1.25rem;
+  }
+
+  .hero-title {
+    font-size: 1.85rem;
+  }
+}
+```
+
+#### Файл: `frontend/app.js`
+```javascript
 /**
  * YouTube Video Analyzer & Downloader Frontend Controller
  */
@@ -2157,7 +3552,7 @@ const modalDownloadBtn = document.getElementById("modalDownloadBtn");
 const toast = document.getElementById("toast");
 
 /* -------------------------------------------------------------
- * 1. Health check & Initializer
+ * 1. Health check & Keep-Alive Initializer (Render Free Spin-Down Guard)
  * ------------------------------------------------------------- */
 async function checkHealth() {
   try {
@@ -2179,6 +3574,8 @@ async function checkHealth() {
 
 document.addEventListener("DOMContentLoaded", () => {
   checkHealth();
+  // Periodic health check every 4 minutes while tab is open to prevent Render Free spin-down
+  setInterval(checkHealth, 240000);
   setupEventListeners();
 });
 
@@ -2209,42 +3606,30 @@ function setupEventListeners() {
         clearBtn.classList.remove("hidden");
         urlInput.focus();
       }
-    } catch (e) {
+    } catch (err) {
       showToast("Не удалось прочитать буфер обмена");
     }
   });
 
-  // Sample chips
-  document.querySelectorAll(".chip-btn").forEach((chip) => {
-    chip.addEventListener("click", () => {
-      const url = chip.getAttribute("data-url");
-      urlInput.value = url;
-      clearBtn.classList.remove("hidden");
-      analyzeForm.dispatchEvent(new Event("submit"));
-    });
-  });
-
-  // Form submit
-  analyzeForm.addEventListener("submit", handleAnalyzeSubmit);
-
   // Alert close
   alertCloseBtn.addEventListener("click", hideAlert);
 
-  // Copy video URL
-  copyUrlBtn.addEventListener("click", () => {
-    if (currentVideoData && currentVideoData.original_url) {
-      navigator.clipboard.writeText(currentVideoData.original_url);
-      showToast("Ссылка скопирована в буфер обмена!");
-    }
+  // Form submission
+  analyzeForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const url = urlInput.value.trim();
+    if (!url) return;
+    await performAnalysis(url);
   });
 
   // Tabs switching
   document.querySelectorAll(".tab-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
-      const targetId = btn.getAttribute("data-tab");
       document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
       document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
+
       btn.classList.add("active");
+      const targetId = btn.getAttribute("data-tab");
       const panel = document.getElementById(targetId);
       if (panel) panel.classList.add("active");
     });
@@ -2253,22 +3638,32 @@ function setupEventListeners() {
   // Modal actions
   modalCloseBtn.addEventListener("click", closeModal);
   modalBackdrop.addEventListener("click", closeModal);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !transcriptModal.classList.contains("hidden")) {
+      closeModal();
+    }
+  });
+
   modalCopyBtn.addEventListener("click", () => {
     if (currentTranscriptText) {
       navigator.clipboard.writeText(currentTranscriptText);
-      showToast("Текст расшифровки скопирован!");
+      showToast("Текст расшифровки скопирован в буфер обмена!");
+    }
+  });
+
+  // Copy video URL button
+  copyUrlBtn.addEventListener("click", () => {
+    if (currentVideoData && currentVideoData.original_url) {
+      navigator.clipboard.writeText(currentVideoData.original_url);
+      showToast("Ссылка на видео скопирована в буфер!");
     }
   });
 }
 
 /* -------------------------------------------------------------
- * 3. Video Analysis API
+ * 3. Main Video Analysis
  * ------------------------------------------------------------- */
-async function handleAnalyzeSubmit(e) {
-  e.preventDefault();
-  const rawUrl = urlInput.value.trim();
-  if (!rawUrl) return;
-
+async function performAnalysis(url) {
   hideAlert();
   setLoading(true);
   resultSection.classList.add("hidden");
@@ -2278,20 +3673,27 @@ async function handleAnalyzeSubmit(e) {
     const res = await fetch("/api/analyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: rawUrl }),
+      body: JSON.stringify({ url }),
     });
 
-    const data = await res.json();
-
     if (!res.ok) {
-      throw new Error(data.detail || "Произошла ошибка при анализе видео.");
+      let errorMsg = "Не удалось проанализировать видео";
+      try {
+        const errorData = await res.json();
+        errorMsg = errorData.detail || errorMsg;
+      } catch (e) {
+        errorMsg = `Ошибка сервера (${res.status} ${res.statusText})`;
+      }
+      showAlert("Ошибка анализа", errorMsg);
+      return;
     }
 
+    const data = await res.json();
     currentVideoData = data;
     renderResults(data);
-    resultSection.classList.remove("hidden");
+    checkHealth();
   } catch (err) {
-    showAlert("Ошибка анализа", err.message);
+    showAlert("Ошибка сети", `Не удалось связаться с сервером: ${err.message}`);
   } finally {
     setLoading(false);
     skeletonLoader.classList.add("hidden");
@@ -2299,203 +3701,161 @@ async function handleAnalyzeSubmit(e) {
 }
 
 /* -------------------------------------------------------------
- * 4. Render Results View
+ * 4. Render UI Components
  * ------------------------------------------------------------- */
 function renderResults(data) {
-  // Video thumbnail & duration
-  videoThumb.src = data.thumbnail || "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>";
+  // Populate video details
+  videoThumb.src = data.thumbnail || "";
   videoThumb.alt = data.title;
   videoDuration.textContent = data.duration_str;
-
-  // Title & Channel
   videoTitle.textContent = data.title;
+
   channelName.textContent = data.channel;
   if (data.channel_url) {
     channelLink.href = data.channel_url;
-    channelLink.style.display = "inline-flex";
+    channelLink.classList.remove("hidden");
   } else {
-    channelLink.style.display = "none";
+    channelLink.classList.add("hidden");
   }
 
-  // Publish date & views
-  uploadDate.textContent = data.upload_date ? `Опубликовано: ${data.upload_date}` : "Дата неизвестна";
-  viewCount.textContent = data.view_count ? `${data.view_count.toLocaleString("ru-RU")} просмотров` : "— просмотров";
-
-  // Original Link
+  uploadDate.textContent = data.upload_date || "Не указана";
+  viewCount.textContent =
+    data.view_count !== null && data.view_count !== undefined
+      ? data.view_count.toLocaleString("ru-RU")
+      : "Скрыто";
   originalVideoLink.href = data.original_url;
-
-  // Description
   videoDescription.textContent = data.description || "Описание отсутствует.";
 
-  // 1. Render Video Options
-  renderVideoOptions(data.video_options, data.original_url);
+  // Render tabs
+  renderVideoOptions(data.video_options);
+  renderAudioOptions(data.audio_options);
+  renderSubtitles(data.subtitle_options);
+  renderFormatsTable(data.all_formats);
 
-  // 2. Render Audio Options
-  renderAudioOptions(data.audio_options, data.original_url);
-
-  // 3. Render Subtitles Options
-  renderSubtitlesOptions(data.subtitle_options, data.original_url);
-
-  // 4. Render Raw Formats Table
-  renderRawFormatsTable(data.all_formats);
+  // Reveal result
+  resultSection.classList.remove("hidden");
+  resultSection.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-function renderVideoOptions(options, url) {
+function renderVideoOptions(options) {
   videoOptionsGrid.innerHTML = "";
   if (!options || options.length === 0) {
-    videoOptionsGrid.innerHTML = `<p class="empty-msg">Варианты видео не найдены.</p>`;
+    videoOptionsGrid.innerHTML = "<p class='text-muted'>Доступные видеопотоки не найдены.</p>";
     return;
   }
 
   options.forEach((opt) => {
+    const isAvailable = opt.available !== false;
     const card = document.createElement("div");
-    card.className = "download-card";
+    card.className = "option-card";
     card.innerHTML = `
-      <div class="download-card-header">
-        <span class="card-quality-badge">${escapeHtml(opt.quality.toUpperCase())}</span>
-        <span class="card-format-tag">${escapeHtml(opt.ext)}</span>
+      <div class="option-header">
+        <span class="option-badge">${escapeHtml(opt.quality)}</span>
+        <span class="option-size">${isAvailable ? "~" : ""}${escapeHtml(opt.filesize_str)}</span>
       </div>
-      <div class="card-details">
-        <span>${escapeHtml(opt.label)}</span>
-        <span class="card-size">${escapeHtml(opt.filesize_str)}</span>
-      </div>
-      <button type="button" class="download-action-btn" data-url="${escapeHtml(opt.download_url)}">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-          <polyline points="7 10 12 15 17 10"></polyline>
-          <line x1="12" y1="15" x2="12" y2="3"></line>
-        </svg>
-        <span>Скачать видео</span>
+      <div class="option-title">${escapeHtml(opt.label)}</div>
+      <button type="button" class="download-stream-btn" data-url="${escapeHtml(opt.download_url)}" ${!isAvailable ? "disabled" : ""}>
+        <span>${isAvailable ? "Скачать MP4" : "Недоступно"}</span>
       </button>
     `;
 
-    const btn = card.querySelector(".download-action-btn");
-    btn.addEventListener("click", () => triggerDownload(btn, opt.download_url));
+    if (isAvailable) {
+      card.querySelector(".download-stream-btn").addEventListener("click", function () {
+        triggerDownload(this, opt.download_url);
+      });
+    }
 
     videoOptionsGrid.appendChild(card);
   });
 }
 
-function renderAudioOptions(options, url) {
+function renderAudioOptions(options) {
   audioOptionsGrid.innerHTML = "";
   if (!options || options.length === 0) {
-    audioOptionsGrid.innerHTML = `<p class="empty-msg">Варианты аудио не найдены.</p>`;
+    audioOptionsGrid.innerHTML = "<p class='text-muted'>Доступные аудиопотоки не найдены.</p>";
     return;
   }
 
   options.forEach((opt) => {
+    const isAvailable = opt.available !== false;
     const card = document.createElement("div");
-    card.className = "download-card";
+    card.className = "option-card";
     card.innerHTML = `
-      <div class="download-card-header">
-        <span class="card-quality-badge">${escapeHtml(opt.format.toUpperCase())}</span>
-        <span class="card-format-tag">${opt.bitrate_kbps} kbps</span>
+      <div class="option-header">
+        <span class="option-badge">${escapeHtml(opt.format.toUpperCase())}</span>
+        <span class="option-size">~${escapeHtml(opt.filesize_str)}</span>
       </div>
-      <div class="card-details">
-        <span>${escapeHtml(opt.label)}</span>
-        <span class="card-size">${escapeHtml(opt.filesize_str)}</span>
-      </div>
-      <button type="button" class="download-action-btn" data-url="${escapeHtml(opt.download_url)}">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-          <polyline points="7 10 12 15 17 10"></polyline>
-          <line x1="12" y1="15" x2="12" y2="3"></line>
-        </svg>
-        <span>Скачать ${opt.format.toUpperCase()}</span>
+      <div class="option-title">${escapeHtml(opt.label)}</div>
+      <button type="button" class="download-stream-btn" data-url="${escapeHtml(opt.download_url)}" ${!isAvailable ? "disabled" : ""}>
+        <span>${isAvailable ? "Скачать " + escapeHtml(opt.format.toUpperCase()) : "Требуется FFmpeg"}</span>
       </button>
     `;
 
-    const btn = card.querySelector(".download-action-btn");
-    btn.addEventListener("click", () => triggerDownload(btn, opt.download_url));
+    if (isAvailable) {
+      card.querySelector(".download-stream-btn").addEventListener("click", function () {
+        triggerDownload(this, opt.download_url);
+      });
+    }
 
     audioOptionsGrid.appendChild(card);
   });
 }
 
-function renderSubtitlesOptions(options, url) {
-  if (!options || options.length === 0) {
+function renderSubtitles(subtitles) {
+  subtitlesContent.innerHTML = "";
+  if (!subtitles || subtitles.length === 0) {
     subtitlesContent.innerHTML = `
-      <div class="subtitles-layout">
-        <p class="empty-msg" style="color: var(--text-muted); padding: 12px 0;">
-          ⚠️ Субтитры или автоматические расшифровки для этого видео отсутствуют на YouTube.
-        </p>
+      <div class="alert-box" style="margin-top:0;">
+        <span class="alert-icon">ℹ️</span>
+        <div class="alert-content">
+          <p class="alert-desc">Для данного видео не найдено ручных или автоматически сгенерированных субтитров.</p>
+        </div>
       </div>
     `;
     return;
   }
 
-  let selectOptions = options
-    .map((sub, idx) => `<option value="${idx}">${escapeHtml(sub.name)} (${sub.lang})</option>`)
-    .join("");
-
-  subtitlesContent.innerHTML = `
-    <div class="subtitles-layout">
-      <div class="subtitles-controls">
-        <div class="form-group" style="flex: 1; min-width: 220px;">
-          <label class="form-label" for="subLangSelect">Языковая дорожка</label>
-          <select id="subLangSelect" class="select-control">
-            ${selectOptions}
-          </select>
-        </div>
-
-        <div class="form-group">
-          <label class="form-label">Формат файла</label>
-          <div class="format-radios">
-            <label class="radio-chip">
-              <input type="radio" name="subFormat" value="txt" checked>
-              <span>Чистый текст (.txt)</span>
-            </label>
-            <label class="radio-chip">
-              <input type="radio" name="subFormat" value="srt">
-              <span>Субтитры с таймкодами (.srt)</span>
-            </label>
-          </div>
-        </div>
+  subtitles.forEach((sub) => {
+    const item = document.createElement("div");
+    item.className = "subtitle-item";
+    item.innerHTML = `
+      <div class="subtitle-lang-info">
+        <span class="option-badge">${escapeHtml(sub.lang)}</span>
+        <span><strong>${escapeHtml(sub.name)}</strong></span>
       </div>
-
-      <div class="subtitles-actions">
-        <button type="button" id="downloadSubBtn" class="btn btn-primary">
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-            <polyline points="7 10 12 15 17 10"></polyline>
-            <line x1="12" y1="15" x2="12" y2="3"></line>
-          </svg>
-          Скачать файл
+      <div class="subtitle-actions">
+        <button type="button" class="btn btn-secondary preview-sub-btn">
+          <span>Предпросмотр</span>
         </button>
-        <button type="button" id="previewSubBtn" class="btn btn-secondary">
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
-            <circle cx="12" cy="12" r="3"></circle>
-          </svg>
-          Быстрый просмотр текста
+        <button type="button" class="btn btn-primary download-txt-btn">
+          <span>Скачать .txt</span>
+        </button>
+        <button type="button" class="btn btn-secondary download-srt-btn">
+          <span>Скачать .srt</span>
         </button>
       </div>
-    </div>
-  `;
+    `;
 
-  const subSelect = document.getElementById("subLangSelect");
-  const downloadSubBtn = document.getElementById("downloadSubBtn");
-  const previewSubBtn = document.getElementById("previewSubBtn");
+    item.querySelector(".preview-sub-btn").addEventListener("click", () => {
+      openTranscriptModal(sub);
+    });
 
-  downloadSubBtn.addEventListener("click", () => {
-    const selectedIdx = parseInt(subSelect.value, 10);
-    const sub = options[selectedIdx];
-    const fmt = document.querySelector('input[name="subFormat"]:checked').value;
-    const downloadUrl = fmt === "txt" ? sub.txt_url : sub.srt_url;
-    triggerDownload(downloadSubBtn, downloadUrl);
-  });
+    item.querySelector(".download-txt-btn").addEventListener("click", function () {
+      triggerDownload(this, sub.txt_url);
+    });
 
-  previewSubBtn.addEventListener("click", () => {
-    const selectedIdx = parseInt(subSelect.value, 10);
-    const sub = options[selectedIdx];
-    openTranscriptModal(sub);
+    item.querySelector(".download-srt-btn").addEventListener("click", function () {
+      triggerDownload(this, sub.srt_url);
+    });
+
+    subtitlesContent.appendChild(item);
   });
 }
 
-function renderRawFormatsTable(formats) {
+function renderFormatsTable(formats) {
   formatsTableBody.innerHTML = "";
   if (!formats || formats.length === 0) {
-    formatsTableBody.innerHTML = `<tr><td colspan="8" style="text-align:center;">Форматы не найдены</td></tr>`;
+    formatsTableBody.innerHTML = "<tr><td colspan='8'>Информация о форматах отсутствует</td></tr>";
     return;
   }
 
@@ -2560,7 +3920,14 @@ async function triggerDownload(btn, url) {
     try {
       const checkData = await checkRes.json();
       if (checkData.title) {
-        const ext = kind === "audio" ? (format || "mp3") : (kind === "transcript" ? (lang ? `${lang}.${format || "txt"}` : (format || "txt")) : "mp4");
+        const ext =
+          kind === "audio"
+            ? format || "mp3"
+            : kind === "transcript"
+              ? lang
+                ? `${lang}.${format || "txt"}`
+                : format || "txt"
+              : "mp4";
         downloadFilename = `${checkData.title}.${ext}`;
       }
     } catch (e) {
@@ -2590,18 +3957,27 @@ async function triggerDownload(btn, url) {
 async function openTranscriptModal(subOption) {
   transcriptModal.classList.remove("hidden");
   modalTitle.textContent = `Транскрипт: ${subOption.name}`;
-  modalText.textContent = "";
+  modalText.value = "";
   modalLoading.classList.remove("hidden");
   currentTranscriptText = "";
 
   try {
     const res = await fetch(subOption.txt_url);
-    if (!res.ok) throw new Error("Не удалось загрузить текст субтитров");
+    if (!res.ok) {
+      let detail = "Не удалось загрузить текст субтитров";
+      try {
+        const errData = await res.json();
+        detail = errData.detail || detail;
+      } catch (e) {
+        detail = `Ошибка сервера (${res.status})`;
+      }
+      throw new Error(detail);
+    }
     const text = await res.text();
     currentTranscriptText = text;
-    modalText.textContent = text || "(Субтитры пусты)";
+    modalText.value = text || "(Субтитры пусты)";
   } catch (err) {
-    modalText.textContent = `Ошибка: ${err.message}`;
+    modalText.value = `Ошибка: ${err.message}`;
   } finally {
     modalLoading.classList.add("hidden");
   }
@@ -2659,1382 +4035,13 @@ function escapeHtml(str) {
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
 }
+```
 
-`
 
----
+### 4. Документация проекта
 
-### Файл: frontend/index.html
-
-`html
-<!DOCTYPE html>
-<html lang="ru">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>YouTube Analyzer & Downloader</title>
-  <meta name="description" content="Анализ видео YouTube, скачивание видео в высоком качестве, извлечение чистого аудио MP3/M4A и текстового транскрипта без таймкодов.">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>▶️</text></svg>">
-  <link rel="stylesheet" href="style.css">
-</head>
-<body>
-  <!-- Header -->
-  <header class="header">
-    <div class="container header-inner">
-      <div class="brand">
-        <div class="logo-icon">
-          <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="2" y="4" width="20" height="16" rx="4" fill="#ff0033" stroke="none"/>
-            <polygon points="10,8 16,12 10,16" fill="#ffffff" stroke="none"/>
-          </svg>
-        </div>
-        <div class="brand-text">
-          <span class="brand-name">YouTube <span>Analyzer</span></span>
-          <span class="brand-tag">Web Edition</span>
-        </div>
-      </div>
-      <div class="header-status">
-        <span class="status-indicator" id="serverStatusDot"></span>
-        <span class="status-text" id="serverStatusText">Проверка сервера...</span>
-      </div>
-    </div>
-  </header>
-
-  <!-- Main Content -->
-  <main class="main-content">
-    <div class="container">
-      
-      <!-- Hero Section -->
-      <section class="hero-section">
-        <h1 class="hero-title">Анализ и скачивание видео <span class="gradient-text">YouTube</span></h1>
-        <p class="hero-subtitle">
-          Получайте подробные метаданные, скачивайте видео в любом качестве (до 1080p/Best),
-          извлекайте аудио (MP3/M4A) и чистый текст субтитров без лишних таймкодов.
-        </p>
-
-        <!-- Search Bar -->
-        <form id="analyzeForm" class="search-form">
-          <div class="search-box">
-            <svg class="search-icon" viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none">
-              <circle cx="11" cy="11" r="8"></circle>
-              <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-            </svg>
-            <input 
-              type="text" 
-              id="urlInput" 
-              class="url-input" 
-              placeholder="Вставьте ссылку на YouTube (например: https://www.youtube.com/watch?v=...)" 
-              required
-              autocomplete="off"
-            >
-            <button type="button" id="pasteBtn" class="action-icon-btn" title="Вставить из буфера">
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>
-                <rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect>
-              </svg>
-            </button>
-            <button type="button" id="clearBtn" class="action-icon-btn hidden" title="Очистить">
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
-                <line x1="18" y1="6" x2="6" y2="18"></line>
-                <line x1="6" y1="6" x2="18" y2="18"></line>
-              </svg>
-            </button>
-            <button type="submit" id="submitBtn" class="submit-btn">
-              <span class="btn-text">Анализировать</span>
-              <div class="spinner hidden" id="submitSpinner"></div>
-            </button>
-          </div>
-        </form>
-
-        <!-- Sample URLs -->
-        <div class="sample-chips">
-          <span class="chips-label">Быстрый тест:</span>
-          <button type="button" class="chip-btn" data-url="https://www.youtube.com/watch?v=jNQXAC9IVRw">Первое видео YouTube (19s)</button>
-          <button type="button" class="chip-btn" data-url="https://www.youtube.com/watch?v=dQw4w9WgXcQ">Rick Astley</button>
-        </div>
-      </section>
-
-      <!-- Alert Box -->
-      <div id="alertBox" class="alert-box hidden">
-        <div class="alert-icon" id="alertIcon">⚠️</div>
-        <div class="alert-content">
-          <div class="alert-title" id="alertTitle">Ошибка</div>
-          <div class="alert-desc" id="alertDesc">Текст ошибки</div>
-        </div>
-        <button type="button" class="alert-close" id="alertCloseBtn">&times;</button>
-      </div>
-
-      <!-- Loading Skeleton -->
-      <div id="skeletonLoader" class="skeleton-wrapper hidden">
-        <div class="skeleton skeleton-header"></div>
-        <div class="skeleton-body">
-          <div class="skeleton skeleton-thumb"></div>
-          <div class="skeleton-details">
-            <div class="skeleton skeleton-line line-title"></div>
-            <div class="skeleton skeleton-line line-meta"></div>
-            <div class="skeleton skeleton-line line-meta"></div>
-            <div class="skeleton skeleton-line line-btn"></div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Result Card -->
-      <section id="resultSection" class="result-section hidden">
-        <!-- Overview Card -->
-        <div class="video-card">
-          <div class="video-thumb-container">
-            <img id="videoThumb" src="" alt="Превью видео" class="video-thumb">
-            <span class="duration-badge" id="videoDuration">00:00</span>
-          </div>
-
-          <div class="video-info">
-            <h2 id="videoTitle" class="video-title">Название видео</h2>
-            
-            <div class="meta-row">
-              <a id="channelLink" href="#" target="_blank" rel="noopener noreferrer" class="meta-item channel-item">
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-                  <circle cx="12" cy="7" r="4"></circle>
-                </svg>
-                <span id="channelName">Канал</span>
-              </a>
-
-              <div class="meta-item">
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-                  <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
-                  <line x1="16" y1="2" x2="16" y2="6"></line>
-                  <line x1="8" y1="2" x2="8" y2="6"></line>
-                  <line x1="3" y1="10" x2="21" y2="10"></line>
-                </svg>
-                <span id="uploadDate">Дата публикации</span>
-              </div>
-
-              <div class="meta-item">
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
-                  <circle cx="12" cy="12" r="3"></circle>
-                </svg>
-                <span id="viewCount">0 просмотров</span>
-              </div>
-            </div>
-
-            <div class="video-actions">
-              <a id="originalVideoLink" href="#" target="_blank" rel="noopener noreferrer" class="btn btn-secondary">
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
-                  <path d="M19.615 3.184c-3.604-.246-11.631-.245-15.23 0-3.897.266-4.356 2.62-4.385 8.816.029 6.185.484 8.549 4.385 8.816 3.6.245 11.626.246 15.23 0 3.897-.266 4.356-2.62 4.385-8.816-.029-6.185-.484-8.549-4.385-8.816zm-10.615 12.816v-8l8 3.993-8 4.007z"/>
-                </svg>
-                Открыть оригинал
-              </a>
-              <button type="button" id="copyUrlBtn" class="btn btn-secondary">
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                </svg>
-                Копировать ссылку
-              </button>
-            </div>
-
-            <!-- Description toggle -->
-            <details class="description-accordion" id="descAccordion">
-              <summary class="desc-summary">Описание видео</summary>
-              <div class="desc-body" id="videoDescription">Нет описания.</div>
-            </details>
-          </div>
-        </div>
-
-        <!-- Download Tabs -->
-        <div class="tabs-container">
-          <div class="tabs-nav" role="tablist">
-            <button type="button" class="tab-btn active" data-tab="tab-video" role="tab">
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
-                <rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"></rect>
-                <line x1="7" y1="2" x2="7" y2="22"></line>
-                <line x1="17" y1="2" x2="17" y2="22"></line>
-                <line x1="2" y1="12" x2="22" y2="12"></line>
-                <line x1="2" y1="7" x2="7" y2="7"></line>
-                <line x1="2" y1="17" x2="7" y2="17"></line>
-                <line x1="17" y1="17" x2="22" y2="17"></line>
-                <line x1="17" y1="7" x2="22" y2="7"></line>
-              </svg>
-              Видео (MP4)
-            </button>
-            <button type="button" class="tab-btn" data-tab="tab-audio" role="tab">
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M9 18V5l12-2v13"></path>
-                <circle cx="6" cy="18" r="3"></circle>
-                <circle cx="18" cy="16" r="3"></circle>
-              </svg>
-              Аудио (MP3 / M4A)
-            </button>
-            <button type="button" class="tab-btn" data-tab="tab-subtitles" role="tab">
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                <polyline points="14 2 14 8 20 8"></polyline>
-                <line x1="16" y1="13" x2="8" y2="13"></line>
-                <line x1="16" y1="17" x2="8" y2="17"></line>
-                <polyline points="10 9 9 9 8 9"></polyline>
-              </svg>
-              Транскрипт / Субтитры
-            </button>
-            <button type="button" class="tab-btn" data-tab="tab-raw" role="tab">
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
-                <polyline points="4 7 4 4 20 4 20 7"></polyline>
-                <line x1="9" y1="20" x2="15" y2="20"></line>
-                <line x1="12" y1="4" x2="12" y2="20"></line>
-              </svg>
-              Все форматы yt-dlp
-            </button>
-          </div>
-
-          <!-- Video Panel -->
-          <div class="tab-panel active" id="tab-video" role="tabpanel">
-            <div class="panel-header">
-              <h3 class="panel-title">Варианты скачивания видео (MP4)</h3>
-              <p class="panel-subtitle">Сервер автоматически объединяет видеопоток с наилучшим аудиопотоком через FFmpeg.</p>
-            </div>
-            <div class="download-grid" id="videoOptionsGrid">
-              <!-- Rendered via JS -->
-            </div>
-          </div>
-
-          <!-- Audio Panel -->
-          <div class="tab-panel" id="tab-audio" role="tabpanel">
-            <div class="panel-header">
-              <h3 class="panel-title">Варианты скачивания аудио</h3>
-              <p class="panel-subtitle">MP3 конвертируется в 320 kbps через FFmpeg, M4A скачивается в оригинальном AAC-контейнере.</p>
-            </div>
-            <div class="download-grid" id="audioOptionsGrid">
-              <!-- Rendered via JS -->
-            </div>
-          </div>
-
-          <!-- Subtitles Panel -->
-          <div class="tab-panel" id="tab-subtitles" role="tabpanel">
-            <div class="panel-header">
-              <h3 class="panel-title">Расшифровка и субтитры</h3>
-              <p class="panel-subtitle">Чистый текст (.txt) очищен от дубликатов строк и таймкодов (алгоритм из analyze.py), а .srt подходит для медиаплееров.</p>
-            </div>
-            <div id="subtitlesContent">
-              <!-- Rendered via JS -->
-            </div>
-          </div>
-
-          <!-- Raw Formats Panel -->
-          <div class="tab-panel" id="tab-raw" role="tabpanel">
-            <div class="panel-header">
-              <h3 class="panel-title">Техническая таблица всех стримов</h3>
-              <p class="panel-subtitle">Полный перечень потоков, доступных для этого видео через движок yt-dlp.</p>
-            </div>
-            <div class="table-responsive">
-              <table class="formats-table">
-                <thead>
-                  <tr>
-                    <th>ID</th>
-                    <th>Расширение</th>
-                    <th>Разрешение</th>
-                    <th>FPS</th>
-                    <th>Размер</th>
-                    <th>Видеокодек</th>
-                    <th>Аудиокодек</th>
-                    <th>Инфо</th>
-                  </tr>
-                </thead>
-                <tbody id="formatsTableBody">
-                  <!-- Rendered via JS -->
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      </section>
-
-    </div>
-  </main>
-
-  <!-- Transcript Preview Modal -->
-  <div id="transcriptModal" class="modal hidden">
-    <div class="modal-backdrop" id="modalBackdrop"></div>
-    <div class="modal-card">
-      <div class="modal-header">
-        <h3 class="modal-title" id="modalTitle">Просмотр расшифровки</h3>
-        <button type="button" class="modal-close" id="modalCloseBtn">&times;</button>
-      </div>
-      <div class="modal-body">
-        <div class="modal-loading hidden" id="modalLoading">
-          <div class="spinner"></div>
-          <span>Загрузка текста...</span>
-        </div>
-        <pre class="transcript-pre" id="modalText"></pre>
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-secondary" id="modalCopyBtn">Скопировать весь текст</button>
-        <button type="button" class="btn btn-primary" id="modalDownloadBtn">Скачать .txt</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Toast Notification -->
-  <div id="toast" class="toast hidden">Сообщение</div>
-
-  <!-- Footer -->
-  <footer class="footer">
-    <div class="container footer-inner">
-      <p class="footer-copy">© 2026 YouTube Video Analyzer & Downloader. Лицензия MIT.</p>
-      <div class="footer-links">
-        <span>FastAPI</span>
-        <span>•</span>
-        <span>yt-dlp</span>
-        <span>•</span>
-        <span>FFmpeg</span>
-      </div>
-    </div>
-  </footer>
-
-  <script src="app.js"></script>
-</body>
-</html>
-
-`
-
----
-
-### Файл: frontend/style.css
-
-`css
-/* Global CSS & Reset */
-:root {
-  --bg-color: #0b0f19;
-  --bg-card: #131b2e;
-  --bg-card-hover: #1a243d;
-  --bg-input: #1b243b;
-  --border-color: #263353;
-  --border-focus: #ff0033;
-  --text-main: #f8fafc;
-  --text-muted: #94a3b8;
-  --text-dim: #64748b;
-  --accent-red: #ff0033;
-  --accent-red-hover: #e6002e;
-  --accent-blue: #3b82f6;
-  --accent-green: #10b981;
-  --accent-amber: #f59e0b;
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 16px;
-  --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.2);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.35);
-  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
-  --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-}
-
-*, *::before, *::after {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-}
-
-body {
-  font-family: var(--font-family);
-  background-color: var(--bg-color);
-  color: var(--text-main);
-  line-height: 1.5;
-  min-height: 100vh;
-  display: flex;
-  flex-direction: column;
-}
-
-.container {
-  width: 100%;
-  max-width: 1140px;
-  margin: 0 auto;
-  padding: 0 1.25rem;
-}
-
-/* Header */
-.header {
-  border-bottom: 1px solid var(--border-color);
-  background: rgba(11, 15, 25, 0.85);
-  backdrop-filter: blur(12px);
-  position: sticky;
-  top: 0;
-  z-index: 50;
-}
-
-.header-inner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  height: 64px;
-}
-
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  text-decoration: none;
-}
-
-.logo-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.brand-text {
-  display: flex;
-  flex-direction: column;
-}
-
-.brand-name {
-  font-size: 1.15rem;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-}
-
-.brand-name span {
-  color: var(--accent-red);
-}
-
-.brand-tag {
-  font-size: 0.7rem;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  font-weight: 600;
-}
-
-.header-status {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 0.85rem;
-  background: var(--bg-card);
-  padding: 6px 14px;
-  border-radius: 999px;
-  border: 1px solid var(--border-color);
-}
-
-.status-indicator {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background-color: var(--accent-amber);
-  display: inline-block;
-  box-shadow: 0 0 8px currentColor;
-}
-
-.status-indicator.online {
-  background-color: var(--accent-green);
-  color: var(--accent-green);
-}
-
-.status-indicator.offline {
-  background-color: var(--accent-red);
-  color: var(--accent-red);
-}
-
-/* Main Content */
-.main-content {
-  flex: 1;
-  padding: 2.5rem 0;
-}
-
-/* Hero Section */
-.hero-section {
-  text-align: center;
-  margin-bottom: 2.5rem;
-}
-
-.hero-title {
-  font-size: 2.4rem;
-  font-weight: 800;
-  letter-spacing: -0.03em;
-  margin-bottom: 0.75rem;
-}
-
-.gradient-text {
-  background: linear-gradient(135deg, #ff0033 0%, #ff6b81 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-}
-
-.hero-subtitle {
-  font-size: 1.05rem;
-  color: var(--text-muted);
-  max-width: 680px;
-  margin: 0 auto 2rem auto;
-}
-
-/* Search Form */
-.search-form {
-  max-width: 800px;
-  margin: 0 auto 1.25rem auto;
-}
-
-.search-box {
-  display: flex;
-  align-items: center;
-  background: var(--bg-card);
-  border: 1.5px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  padding: 6px 8px 6px 16px;
-  box-shadow: var(--shadow-md);
-  transition: all 0.2s ease;
-}
-
-.search-box:focus-within {
-  border-color: var(--accent-red);
-  box-shadow: 0 0 0 3px rgba(255, 0, 51, 0.2), var(--shadow-lg);
-}
-
-.search-icon {
-  color: var(--text-dim);
-  flex-shrink: 0;
-  margin-right: 12px;
-}
-
-.url-input {
-  flex: 1;
-  background: transparent;
-  border: none;
-  outline: none;
-  color: var(--text-main);
-  font-size: 1rem;
-  font-family: inherit;
-  min-width: 0;
-}
-
-.url-input::placeholder {
-  color: var(--text-dim);
-}
-
-.action-icon-btn {
-  background: transparent;
-  border: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  padding: 8px;
-  border-radius: var(--radius-sm);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.15s ease;
-}
-
-.action-icon-btn:hover {
-  color: var(--text-main);
-  background: rgba(255, 255, 255, 0.08);
-}
-
-.submit-btn {
-  background: var(--accent-red);
-  color: white;
-  border: none;
-  outline: none;
-  font-weight: 600;
-  font-size: 0.95rem;
-  padding: 10px 22px;
-  border-radius: var(--radius-md);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  transition: all 0.2s ease;
-  margin-left: 6px;
-}
-
-.submit-btn:hover:not(:disabled) {
-  background: var(--accent-red-hover);
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(255, 0, 51, 0.35);
-}
-
-.submit-btn:disabled {
-  opacity: 0.7;
-  cursor: not-allowed;
-}
-
-/* Sample chips */
-.sample-chips {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.chips-label {
-  font-size: 0.85rem;
-  color: var(--text-dim);
-}
-
-.chip-btn {
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
-  color: var(--text-muted);
-  font-size: 0.8rem;
-  padding: 4px 12px;
-  border-radius: 999px;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.chip-btn:hover {
-  background: var(--bg-card-hover);
-  color: var(--text-main);
-  border-color: var(--accent-red);
-}
-
-/* Alert Box */
-.alert-box {
-  max-width: 800px;
-  margin: 0 auto 2rem auto;
-  background: rgba(239, 68, 68, 0.12);
-  border: 1px solid rgba(239, 68, 68, 0.3);
-  border-radius: var(--radius-md);
-  padding: 14px 18px;
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-}
-
-.alert-icon {
-  font-size: 1.25rem;
-  line-height: 1;
-}
-
-.alert-content {
-  flex: 1;
-}
-
-.alert-title {
-  font-weight: 600;
-  font-size: 0.95rem;
-  color: #fca5a5;
-  margin-bottom: 2px;
-}
-
-.alert-desc {
-  font-size: 0.875rem;
-  color: #f87171;
-  word-break: break-word;
-}
-
-.alert-close {
-  background: transparent;
-  border: none;
-  color: #fca5a5;
-  font-size: 1.4rem;
-  cursor: pointer;
-  line-height: 1;
-}
-
-/* Skeleton loader */
-.skeleton-wrapper {
-  max-width: 1000px;
-  margin: 0 auto;
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  padding: 24px;
-}
-
-.skeleton {
-  background: linear-gradient(90deg, #1e293b 25%, #334155 50%, #1e293b 75%);
-  background-size: 200% 100%;
-  animation: shimmer 1.5s infinite;
-  border-radius: var(--radius-sm);
-}
-
-@keyframes shimmer {
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
-}
-
-.skeleton-body {
-  display: flex;
-  gap: 20px;
-  margin-top: 16px;
-}
-
-.skeleton-thumb {
-  width: 320px;
-  height: 180px;
-  flex-shrink: 0;
-  border-radius: var(--radius-md);
-}
-
-.skeleton-details {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.skeleton-line {
-  height: 18px;
-}
-
-.line-title { width: 85%; height: 26px; }
-.line-meta { width: 45%; }
-.line-btn { width: 140px; height: 38px; margin-top: auto; }
-
-/* Result Section */
-.result-section {
-  max-width: 1000px;
-  margin: 0 auto;
-  animation: fadeIn 0.3s ease;
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-/* Video Card */
-.video-card {
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  padding: 24px;
-  display: flex;
-  gap: 24px;
-  box-shadow: var(--shadow-md);
-  margin-bottom: 2rem;
-}
-
-.video-thumb-container {
-  position: relative;
-  width: 340px;
-  aspect-ratio: 16 / 9;
-  border-radius: var(--radius-md);
-  overflow: hidden;
-  background: #000;
-  flex-shrink: 0;
-}
-
-.video-thumb {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  transition: transform 0.3s ease;
-}
-
-.video-thumb-container:hover .video-thumb {
-  transform: scale(1.03);
-}
-
-.duration-badge {
-  position: absolute;
-  bottom: 8px;
-  right: 8px;
-  background: rgba(0, 0, 0, 0.85);
-  color: white;
-  font-size: 0.8rem;
-  font-weight: 600;
-  padding: 3px 8px;
-  border-radius: var(--radius-sm);
-  backdrop-filter: blur(4px);
-}
-
-.video-info {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.video-title {
-  font-size: 1.35rem;
-  font-weight: 700;
-  line-height: 1.35;
-  margin-bottom: 12px;
-  color: var(--text-main);
-  word-break: break-word;
-}
-
-.meta-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 16px;
-  margin-bottom: 16px;
-}
-
-.meta-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 0.85rem;
-  color: var(--text-muted);
-}
-
-.channel-item {
-  color: #60a5fa;
-  text-decoration: none;
-  font-weight: 600;
-  transition: color 0.15s ease;
-}
-
-.channel-item:hover {
-  color: #93c5fd;
-  text-decoration: underline;
-}
-
-.video-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-bottom: 16px;
-}
-
-.btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 8px 16px;
-  border-radius: var(--radius-md);
-  font-size: 0.9rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  text-decoration: none;
-  border: none;
-}
-
-.btn-secondary {
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--text-main);
-  border: 1px solid var(--border-color);
-}
-
-.btn-secondary:hover {
-  background: rgba(255, 255, 255, 0.14);
-  border-color: #475569;
-}
-
-.btn-primary {
-  background: var(--accent-red);
-  color: white;
-}
-
-.btn-primary:hover {
-  background: var(--accent-red-hover);
-}
-
-.description-accordion {
-  margin-top: auto;
-  border-top: 1px solid var(--border-color);
-  padding-top: 10px;
-}
-
-.desc-summary {
-  font-size: 0.85rem;
-  font-weight: 600;
-  color: var(--text-dim);
-  cursor: pointer;
-  user-select: none;
-}
-
-.desc-summary:hover {
-  color: var(--text-muted);
-}
-
-.desc-body {
-  margin-top: 8px;
-  font-size: 0.85rem;
-  color: var(--text-muted);
-  max-height: 160px;
-  overflow-y: auto;
-  white-space: pre-wrap;
-  background: rgba(0, 0, 0, 0.2);
-  padding: 10px;
-  border-radius: var(--radius-sm);
-  border: 1px solid rgba(255, 255, 255, 0.05);
-}
-
-/* Tabs */
-.tabs-container {
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  overflow: hidden;
-  box-shadow: var(--shadow-md);
-}
-
-.tabs-nav {
-  display: flex;
-  background: rgba(11, 15, 25, 0.6);
-  border-bottom: 1px solid var(--border-color);
-  overflow-x: auto;
-}
-
-.tab-btn {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 14px 20px;
-  background: transparent;
-  border: none;
-  border-bottom: 2px solid transparent;
-  color: var(--text-muted);
-  font-size: 0.95rem;
-  font-weight: 600;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: all 0.2s ease;
-}
-
-.tab-btn:hover {
-  color: var(--text-main);
-  background: rgba(255, 255, 255, 0.03);
-}
-
-.tab-btn.active {
-  color: var(--text-main);
-  border-bottom-color: var(--accent-red);
-  background: rgba(255, 0, 51, 0.06);
-}
-
-.tab-panel {
-  display: none;
-  padding: 24px;
-}
-
-.tab-panel.active {
-  display: block;
-  animation: fadeIn 0.2s ease;
-}
-
-.panel-header {
-  margin-bottom: 20px;
-}
-
-.panel-title {
-  font-size: 1.15rem;
-  font-weight: 700;
-  margin-bottom: 4px;
-}
-
-.panel-subtitle {
-  font-size: 0.85rem;
-  color: var(--text-muted);
-}
-
-/* Download Grid */
-.download-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 16px;
-}
-
-.download-card {
-  background: var(--bg-input);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  padding: 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  transition: all 0.2s ease;
-}
-
-.download-card:hover {
-  border-color: #475569;
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-sm);
-}
-
-.download-card-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.card-quality-badge {
-  font-size: 0.95rem;
-  font-weight: 700;
-  color: var(--text-main);
-}
-
-.card-format-tag {
-  background: rgba(59, 130, 246, 0.15);
-  color: #93c5fd;
-  font-size: 0.75rem;
-  font-weight: 700;
-  padding: 2px 8px;
-  border-radius: var(--radius-sm);
-  text-transform: uppercase;
-}
-
-.card-details {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 0.85rem;
-  color: var(--text-muted);
-}
-
-.card-size {
-  font-weight: 600;
-  color: var(--accent-green);
-  background: rgba(16, 185, 129, 0.12);
-  padding: 2px 8px;
-  border-radius: var(--radius-sm);
-}
-
-.download-action-btn {
-  width: 100%;
-  padding: 10px;
-  background: var(--accent-red);
-  color: white;
-  border: none;
-  border-radius: var(--radius-sm);
-  font-weight: 600;
-  font-size: 0.9rem;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  transition: all 0.2s ease;
-}
-
-.download-action-btn:hover:not(:disabled) {
-  background: var(--accent-red-hover);
-}
-
-.download-action-btn:disabled {
-  opacity: 0.7;
-  cursor: not-allowed;
-}
-
-/* Subtitles tab layout */
-.subtitles-layout {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-}
-
-.subtitles-controls {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 16px;
-  align-items: center;
-  background: var(--bg-input);
-  padding: 16px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-color);
-}
-
-.form-group {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.form-label {
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: var(--text-muted);
-}
-
-.select-control {
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
-  color: var(--text-main);
-  padding: 8px 14px;
-  border-radius: var(--radius-sm);
-  font-family: inherit;
-  font-size: 0.9rem;
-  outline: none;
-}
-
-.format-radios {
-  display: flex;
-  gap: 10px;
-}
-
-.radio-chip {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
-  padding: 6px 12px;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  font-size: 0.85rem;
-  user-select: none;
-}
-
-.radio-chip input {
-  accent-color: var(--accent-red);
-}
-
-.subtitles-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
-/* Raw Table */
-.table-responsive {
-  overflow-x: auto;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-}
-
-.formats-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.85rem;
-  text-align: left;
-}
-
-.formats-table th {
-  background: rgba(11, 15, 25, 0.7);
-  padding: 10px 14px;
-  color: var(--text-muted);
-  font-weight: 600;
-  border-bottom: 1px solid var(--border-color);
-}
-
-.formats-table td {
-  padding: 10px 14px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-  color: var(--text-main);
-}
-
-.formats-table tr:hover td {
-  background: rgba(255, 255, 255, 0.02);
-}
-
-/* Modal */
-.modal {
-  position: fixed;
-  inset: 0;
-  z-index: 100;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 1.5rem;
-}
-
-.modal-backdrop {
-  position: absolute;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.75);
-  backdrop-filter: blur(4px);
-}
-
-.modal-card {
-  position: relative;
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  width: 100%;
-  max-width: 720px;
-  max-height: 80vh;
-  display: flex;
-  flex-direction: column;
-  box-shadow: var(--shadow-lg);
-  z-index: 10;
-  animation: fadeIn 0.2s ease;
-}
-
-.modal-header {
-  padding: 18px 24px;
-  border-bottom: 1px solid var(--border-color);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.modal-title {
-  font-size: 1.15rem;
-  font-weight: 700;
-}
-
-.modal-close {
-  background: transparent;
-  border: none;
-  color: var(--text-muted);
-  font-size: 1.6rem;
-  cursor: pointer;
-  line-height: 1;
-}
-
-.modal-body {
-  padding: 20px 24px;
-  overflow-y: auto;
-  flex: 1;
-}
-
-.transcript-pre {
-  white-space: pre-wrap;
-  font-family: inherit;
-  font-size: 0.9rem;
-  line-height: 1.6;
-  color: var(--text-main);
-}
-
-.modal-loading {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 12px;
-  padding: 40px 0;
-  color: var(--text-muted);
-}
-
-.modal-footer {
-  padding: 16px 24px;
-  border-top: 1px solid var(--border-color);
-  display: flex;
-  justify-content: flex-end;
-  gap: 12px;
-}
-
-/* Toast */
-.toast {
-  position: fixed;
-  bottom: 24px;
-  right: 24px;
-  background: #1e293b;
-  border: 1px solid #475569;
-  color: white;
-  padding: 12px 20px;
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-lg);
-  font-size: 0.9rem;
-  font-weight: 500;
-  z-index: 150;
-  animation: slideUp 0.25s ease;
-}
-
-@keyframes slideUp {
-  from { opacity: 0; transform: translateY(12px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-/* Spinner */
-.spinner {
-  width: 18px;
-  height: 18px;
-  border: 2px solid rgba(255, 255, 255, 0.3);
-  border-radius: 50%;
-  border-top-color: white;
-  animation: spin 0.7s linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
-/* Footer */
-.footer {
-  border-top: 1px solid var(--border-color);
-  background: var(--bg-card);
-  padding: 20px 0;
-  margin-top: auto;
-}
-
-.footer-inner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 12px;
-  font-size: 0.85rem;
-  color: var(--text-dim);
-}
-
-.footer-links {
-  display: flex;
-  gap: 8px;
-  color: var(--text-muted);
-}
-
-.hidden {
-  display: none !important;
-}
-
-/* Responsive */
-@media (max-width: 820px) {
-  .hero-title { font-size: 1.85rem; }
-  .video-card { flex-direction: column; }
-  .video-thumb-container { width: 100%; }
-}
-
-`
-
----
-
-### Файл: LICENSE
-
-`text
-MIT License
-
-Copyright (c) 2026 YouTube Analyzer Contributors
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-`
-
----
-
-### Файл: package.json
-
-`json
-{
-  "name": "youtube-analyzer-web",
-  "version": "1.0.0",
-  "description": "Full-stack YouTube video metadata analyzer, media downloader and transcript extractor",
-  "main": "backend/app/main.py",
-  "scripts": {
-    "start": "python -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8000",
-    "dev": "python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000 --reload",
-    "docker:build": "docker build -t yt-analyzer-web .",
-    "docker:run": "docker run -p 8000:8000 --env-file .env yt-analyzer-web",
-    "compose:up": "docker compose up -d",
-    "compose:down": "docker compose down"
-  },
-  "keywords": [
-    "youtube",
-    "yt-dlp",
-    "fastapi",
-    "video-downloader",
-    "transcript",
-    "subtitles",
-    "ffmpeg"
-  ],
-  "author": "YouTube Analyzer Contributors",
-  "license": "MIT"
-}
-
-`
-
----
-
-### Файл: README.md
-
-`markdown
+#### Файл: `README.md`
+```markdown
 # YouTube Video Analyzer & Downloader 🚀
 
 Полнофункциональный веб-сервис для анализа метаданных видеороликов с YouTube, скачивания видео в высоком качестве (до 1080p / Best), извлечения чистого аудио (MP3 320 kbps / M4A) и экспорта расшифровки субтитров (чистый текст `.txt` без таймкодов и дублей или `.srt` для плееров).
@@ -4070,334 +4077,4 @@ SOFTWARE.
 ---
 
 ## 🏗 Архитектура и обоснование стека
-
 ```
-youtube-analyzer-web/
-├── backend/                  # Серверная часть (FastAPI + yt-dlp + FFmpeg)
-│   └── app/
-│       ├── __init__.py
-│       ├── config.py         # Настройки и чтение переменных окружения (.env)
-│       ├── limiter.py        # Rate-limiter (IP) и валидация URL (защита от SSRF)
-│       ├── main.py           # Точки входа API, стриминг файлов и раздача статики
-│       ├── schemas.py        # Pydantic-схемы валидации запросов и ответов
-│       └── services/
-│           ├── __init__.py
-│           ├── cleanup.py    # Автоматическая очистка временных скачанных файлов
-│           └── youtube.py    # Логика yt-dlp: метаданные, субтитры, слияние аудио/видео
-├── frontend/                 # Клиентская часть (Modern Vanilla SPA)
-│   ├── index.html            # Семантическая разметка, доступность, превью, модальные окна
-│   ├── style.css             # Тёмная тема, адаптивная сетка, скелетоны, анимации
-│   └── app.js                # Контроллер: Fetch API, скачивание файлов, реактивный UI
-├── .env.example              # Образец конфигурационных переменных
-├── .gitignore                # Исключение кэшей, venv, временных файлов и секретов
-├── Dockerfile                # Оптимизированный образ на базе python:3.11-slim с ffmpeg
-├── docker-compose.yml        # Готовый запуск одной командой
-├── fly.toml                  # Конфигурация для деплоя на Fly.io
-├── LICENSE                   # Лицензия MIT
-├── package.json              # Вспомогательные скрипты запуска для npm
-├── README.md                 # Документация и инструкции по деплою
-├── render.yaml               # Конфигурация деплоя для Render Blueprint
-└── requirements.txt          # Python-зависимости с зафиксированными версиями
-```
-
-### Почему чистый HTML5/CSS3/ES6 SPA вместо тяжелых фреймворков (React/Vite)?
-1. **Zero-Build & Легковесность**: Нет этапа сборки (`npm run build`), нет гигабайтной папки `node_modules`. Docker-образ собирается за 30 секунд и весит менее 180 МБ.
-2. **Единый сервис**: Бэкенд FastAPI напрямую раздаёт статику (`StaticFiles(directory="frontend", html=True)`). Это позволяет развернуть весь сайт на **одном бесплатном инстансе** без необходимости настраивать CORS и поддерживать два разных хостинга.
-3. **Мгновенный старт (0ms Hydration)**: Нативные браузерные возможности (Streams, Blob, Fetch, Clipboard API).
-
----
-
-## 🔒 Безопасность и ограничения
-
-1. **SSRF-защита**: Разрешены исключительно домены `youtube.com`, `m.youtube.com`, `youtu.be`. Любые обращения к внутренним IP (`127.0.0.1`, `169.254.169.254`, локальная сеть) отсекаются до вызова `yt-dlp`.
-2. **Rate Limiting**: Ограничение количества запросов по IP (по умолчанию 30 запросов в минуту) с поддержкой заголовков `X-Forwarded-For` за обратными прокси (Cloudflare, Render, Nginx).
-3. **Лимит длительности**: Ограничение максимальной длительности видео (по умолчанию 4 часа — `14400` сек), предотвращающее перегрузку процессора долгими видео.
-4. **Лимит размера файла**: Защита от переполнения диска файлами больше допустимого порога (`MAX_FILE_SIZE_MB=1024`).
-5. **Безопасные имена файлов**: Очистка от спецсимволов пути (`../`, `:`, `*`, `?`) предотвращает Path Traversal.
-
----
-
-## ⚙️ Переменные окружения (.env)
-
-Скопируйте пример файла конфигурации:
-```bash
-cp .env.example .env
-```
-
-| Переменная | По умолчанию | Описание |
-|---|---|---|
-| `HOST` | `0.0.0.0` | IP-адрес для привязки веб-сервера |
-| `PORT` | `8000` | Порт приложения |
-| `PROXY_URL` | *пусто* | Прокси для обхода блокировок YouTube (поддерживает `IP:PORT:USER:PASS` или `http://user:pass@ip:port`) |
-| `STORAGE_DIR` | `./downloads` | Директория временных файлов |
-| `MAX_CONCURRENT_DOWNLOADS` | `1` | Ограничение параллельных слияний FFmpeg (1 для 512 МБ RAM) |
-| `MAX_VIDEO_HEIGHT` | `720` | Максимальное разрешение видео (720p предотвращает OOM FFmpeg) |
-| `MAX_DURATION_SECONDS`| `14400` | Макс. длительность видео (сек, 4 часа) |
-| `MAX_FILE_SIZE_MB` | `1024` | Макс. размер файла (МБ, 1 ГБ) |
-| `RATE_LIMIT_PER_MINUTE`| `30` | Лимит запросов в минуту с одного IP |
-| `YTDLP_TIMEOUT_SECONDS`| `90` | Таймаут запросов к YouTube |
-| `CLEANUP_INTERVAL_MINUTES`| `15` | Интервал проверки старых файлов |
-| `FILE_RETENTION_MINUTES`| `30` | Время жизни временных файлов |
-| `CORS_ORIGINS` | `*` | Разрешенные домены CORS |
-
----
-
-## 🛡️ Оптимизации для Render Free (512 МБ RAM, 0.5 CPU)
-
-Бесплатный тариф Render Free имеет жесткий лимит оперативной памяти в **512 МБ**. Превышение этого лимита приводит к немедленному завершению процесса сигналом `SIGKILL` (Out of Memory). В проекте реализован комплекс защитных механизмов:
-
-1. **Сериализация загрузок (`MAX_CONCURRENT_DOWNLOADS=1`)**:
-   - Параллельное слияние двух потоков 1080p в FFmpeg требует до 600-800 МБ RAM.
-   - Сервер использует `threading.Semaphore(1)`. Если второй пользователь запускает скачивание, сервер не падает, а возвращает HTTP 503 с вежливым сообщением подождать 1 минуту.
-2. **Ограничение разрешения (`MAX_VIDEO_HEIGHT=720`)**:
-   - По умолчанию максимальное качество ограничено 720p HD. Это снижает пиковое потребление памяти FFmpeg до 150-250 МБ RAM.
-   - При запросе 1080p сервер возвращает HTTP 400 с пояснением, защищая инстанс от краха.
-3. **Прямой стриминг в браузер без `res.blob()`**:
-   - Клиент не буферизирует видеофайлы (500 МБ - 1 ГБ) в JavaScript Heap браузера.
-   - Браузер скачивает поток напрямую на диск пользователя через нативный загрузчик, предотвращая крах вкладок на смартфонах и ПК.
-4. **Легковесный Pre-flight Check (`/api/check-download`)**:
-   - Перед стартом скачивания фронтенд проверяет доступность слота, лимиты и наличие FFmpeg без нагрузки на сеть.
-5. **Диагностика памяти в `/api/health`**:
-   - Эндпоинт сообщает текущий Resident Set Size (`rss_mb`) и уровень риска (`oom_risk`: low, medium, high).
-
----
-
-## 💻 Локальный запуск
-
-### Вариант 1: Запуск через Python (без Docker)
-
-#### Требования:
-1. **Python 3.10+**
-2. **FFmpeg**:
-   - **Windows**: `winget install Gyan.FFmpeg` или скачайте с [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) и добавьте в `PATH`. Либо библиотека `imageio-ffmpeg` подхватится автоматически.
-   - **Linux (Ubuntu/Debian)**: `sudo apt update && sudo apt install -y ffmpeg`
-   - **macOS**: `brew install ffmpeg`
-
-#### Шаги:
-```bash
-# 1. Перейдите в папку проекта
-cd youtube-analyzer-web
-
-# 2. Создайте виртуальное окружение
-python -m venv venv
-
-# Активация на Windows:
-venv\Scripts\activate
-# Активация на Linux/macOS:
-source venv/bin/activate
-
-# 3. Установите зависимости
-pip install -r requirements.txt
-
-# 4. Скопируйте конфигурацию
-cp .env.example .env
-
-# 5. Запустите сервер разработки
-uvicorn backend.app.main:app --host 127.0.0.1 --port 8000 --reload
-```
-
-Откройте в браузере: **`http://127.0.0.1:8000`**  
-Документация Swagger API: **`http://127.0.0.1:8000/docs`**
-
----
-
-### Вариант 2: Запуск через Docker Compose
-
-Не требует локальной установки Python и FFmpeg — всё упаковано в контейнер:
-
-```bash
-# Сборка и запуск контейнера
-docker compose up -d --build
-
-# Просмотр логов
-docker compose logs -f
-
-# Остановка
-docker compose down
-```
-
-Сервер будет доступен по адресу **`http://localhost:8000`**.
-
----
-
-## 🚀 Деплой в облако (Production)
-
-> [!IMPORTANT]
-> **Почему нельзя использовать GitHub Pages?**  
-> GitHub Pages поддерживает **только статические HTML/JS/CSS сайты** без серверного бэкенда. Для работы `yt-dlp`, извлечения видео и работы утилиты `ffmpeg` необходим полноценный сервер с поддержкой Docker или Python-рантайма.
-
-Ниже приведены проверенные варианты бесплатного и доступного деплоя:
-
----
-
-### Вариант А: Деплой на Render (Рекомендуемый, бесплатно)
-
-1. Загрузите репозиторий на ваш GitHub:
-   ```bash
-   git init
-   git add .
-   git commit -m "Initial commit"
-   git branch -M main
-   git remote add origin https://github.com/<ваш-логин>/<имя-репозитория>.git
-   git push -u origin main
-   ```
-2. Зайдите на [dashboard.render.com](https://dashboard.render.com/).
-3. Нажмите **New +** → **Web Service** → подключите ваш репозиторий GitHub.
-4. Выберите:
-   - **Language**: `Docker`
-   - **Branch**: `main`
-   - **Region**: `Frankfurt (EU)` (или любой другой)
-   - **Instance Type**: `Free`
-5. В разделе **Environment Variables** (Переменные окружения):
-   - Добавьте `PORT` = `10000` (Render использует порт 10000)
-   - При необходимости добавьте `PROXY_URL` (см. раздел «Обход блокировок YouTube»)
-6. Нажмите **Create Web Service**. Через 2 минуты сайт будет доступен по адресу `https://ваш-проект.onrender.com`.
-
-*(Или используйте готовый файл `render.yaml` через раздел Blueprints на Render).*
-
----
-
-### Вариант Б: Деплой на Railway
-
-1. Перейдите на [railway.app](https://railway.app/) и авторизуйтесь через GitHub.
-2. Нажмите **New Project** → **Deploy from GitHub repo** → выберите репозиторий.
-3. Railway автоматически обнаружит `Dockerfile` и начнет сборку.
-4. В разделе **Variables** добавьте переменные при необходимости (`PROXY_URL`).
-5. В разделе **Settings** → **Networking** нажмите **Generate Domain**, чтобы получить публичный HTTPS-адрес.
-
----
-
-### Вариант В: Деплой на Fly.io
-
-1. Установите CLI: `powershell -Command "iwr https://fly.io/install.ps1 -useb | iex"` (Windows) или `curl -L https://fly.io/install.sh | sh` (Linux/macOS).
-2. Выполните вход: `fly auth login`.
-3. В корне репозитория запустите:
-   ```bash
-   fly launch --no-deploy
-   ```
-   (Проект использует готовый файл `fly.toml`).
-4. Разверните:
-   ```bash
-   fly deploy
-   ```
-
----
-
-### Вариант Г: Деплой на свой VPS (Ubuntu 22.04 / 24.04)
-
-```bash
-# 1. Клонируйте репозиторий на VPS
-git clone https://github.com/<ваш-логин>/youtube-analyzer-web.git
-cd youtube-analyzer-web
-
-# 2. Создайте файл окружения
-cp .env.example .env
-
-# 3. Запустите через Docker Compose
-docker compose up -d --build
-```
-
-Для настройки HTTPS через Nginx и Certbot:
-```nginx
-server {
-    server_name your-domain.com;
-
-    location / {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        client_max_body_size 1024M;
-        proxy_read_timeout 600s;
-    }
-}
-```
-
----
-
-## 🌐 Обход блокировок датацентров YouTube (HTTP 429)
-
-Хостинги (AWS, Render, Hetzner, DigitalOcean) часто имеют диапазоны IP-адресов, которые YouTube временно блокирует ошибкой:
-`HTTP Error 429: Too Many Requests` или `Sign in to confirm you're not a bot`.
-
-Чтобы сервис бесперебойно работал в облаке:
-1. Приобретите любой HTTP/SOCKS5 прокси (резидентный или IPv4/IPv6).
-2. Задайте переменную окружения `PROXY_URL` в панели хостинга или в файле `.env`:
-   ```env
-   PROXY_URL=http://login:password@ip:port
-   # Либо в формате analyze.py:
-   # PROXY_URL=ip:port:login:password
-   ```
-Сервис автоматически конвертирует строку в формат, понятный для `yt-dlp`.
-
----
-
-## 📡 Спецификация REST API
-
-| Метод | Эндпоинт | Параметры | Описание |
-|---|---|---|---|
-| `GET` | `/api/health` | — | Проверка здоровья сервиса, статуса FFmpeg/прокси и RAM RSS |
-| `GET` | `/api/check-download` | `url`, `kind`, `quality`, `format` | Pre-flight проверка готовности к скачиванию (слот, ffmpeg, лимиты) |
-| `POST`| `/api/analyze` | JSON: `{"url": "..."}` | Получение метаданных, форматов, субтитров и размеров |
-| `GET` | `/api/download/video` | `url`, `quality` (`1080p`, `720p`, `480p`, `360p`, `best`) | Стриминг видео с авто-удалением после передачи |
-| `GET` | `/api/download/audio` | `url`, `format` (`mp3`, `m4a`) | Стриминг аудиофайла |
-| `GET` | `/api/download/transcript` | `url`, `lang`, `format` (`txt`, `srt`) | Стриминг текста субтитров |
-
----
-
-## 📄 Лицензия
-
-Проект распространяется под открытой лицензией [MIT](LICENSE).
-Вы можете свободно модифицировать, использовать и распространять данный код в личных и коммерческих целях.
-
-`
-
----
-
-### Файл: render.yaml
-
-`yaml
-services:
-  - type: web
-    name: yt-analyzer-web
-    runtime: docker
-    plan: free
-    region: frankfurt
-    dockerfilePath: ./Dockerfile
-    healthCheckPath: /api/health
-    envVars:
-      - key: PORT
-        value: 10000
-      - key: PROXY_URL
-        sync: false
-      - key: MAX_DURATION_SECONDS
-        value: 7200
-      - key: MAX_FILE_SIZE_MB
-        value: 500
-      - key: MAX_CONCURRENT_DOWNLOADS
-        value: 1
-      - key: MAX_VIDEO_HEIGHT
-        value: 720
-      - key: RATE_LIMIT_PER_MINUTE
-        value: 20
-
-`
-
----
-
-### Файл: requirements.txt
-
-`text
-fastapi>=0.110.0
-uvicorn[standard]>=0.28.0
-pydantic>=2.6.0
-python-dotenv>=1.0.0
-yt-dlp>=2024.3.10
-imageio-ffmpeg>=0.4.9
-pytest>=8.0.0
-
-
-`
-
----

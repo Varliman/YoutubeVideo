@@ -1,16 +1,21 @@
 """
 Automated reliability and regression test suite for youtube-analyzer-web.
-Covers Render Free 512MB RAM protections:
+Covers Render Free 512MB RAM protections and core functionality:
 - Concurrency serialization (MAX_CONCURRENT_DOWNLOADS=1, 503 rejection)
-- Height capping and elimination of unconstrained /best and /worst
+- Height capping and elimination of unconstrained /best and /worst, with H.264 priority
 - Error message credential sanitization (no sensitive data leaks)
-- Pre-flight check endpoint (/api/check-download) with video accessibility
+- Pre-flight check endpoint (/api/check-download) with video accessibility, 1080p cap, live stream & duration guard
 - cgroup/RSS memory diagnostics (/api/health)
+- Cyrillic Content-Disposition latin-1 HTTP header safety
+- WebVTT to SRT conversion and clean TXT transcript extraction
+- Writable cookiefile copy for read-only mounts (/etc/secrets/cookies.txt)
+- Extended URL validation (query param order, music.youtube.com, shorts, live)
 """
 
 import os
 import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -25,8 +30,7 @@ from starlette.testclient import TestClient
 
 from backend.app.config import settings
 from backend.app.limiter import validate_youtube_url
-from backend.app.schemas import CheckDownloadResponse, HealthResponse
-from backend.app.main import app, get_process_rss_mb
+from backend.app.main import app, make_content_disposition
 from backend.app.services.cleanup import PROTECTED_FILENAMES
 from backend.app.services.youtube import (
     sanitize_error_message,
@@ -34,6 +38,9 @@ from backend.app.services.youtube import (
     DownloadSlot,
     get_active_downloads_count,
     check_download_feasibility,
+    srt_to_clean_txt,
+    vtt_to_srt,
+    _prepare_writable_cookiefile,
 )
 
 
@@ -61,14 +68,12 @@ class TestReliabilityAndSafety(unittest.TestCase):
     def test_format_selector_720p_capping(self):
         """Ensures 720p selector has NO unconstrained /best and NO unconstrained /worst."""
         selector = _build_format_selector("720p", max_height_cap=720)
-        # Every branch must have height <= 720
         parts = selector.split("/")
         for p in parts:
             self.assertTrue(
                 "height<=720" in p or "height<=480" in p or "height<=360" in p,
                 f"Part {p} violates height cap 720!"
             )
-        # Verify no unconstrained 'best' or 'worst' (must be qualified with [height<=...])
         self.assertIsNone(re.search(r'(^|/)best($|/)', selector))
         self.assertIsNone(re.search(r'(^|/)worst($|/)', selector))
         self.assertTrue(selector.endswith("worst[height<=720]"))
@@ -113,6 +118,15 @@ class TestReliabilityAndSafety(unittest.TestCase):
         url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PL12345"
         norm = validate_youtube_url(url)
         self.assertEqual(norm, "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+
+    def test_url_validation_non_first_v_param_and_music(self):
+        """Mobile share URLs with ?feature=shared&v=... and music.youtube.com must be accepted."""
+        url1 = "https://www.youtube.com/watch?feature=shared&v=dQw4w9WgXcQ"
+        url2 = "https://music.youtube.com/watch?v=dQw4w9WgXcQ&si=abcdef"
+        url3 = "youtu.be/dQw4w9WgXcQ?t=42"
+        self.assertEqual(validate_youtube_url(url1), "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        self.assertEqual(validate_youtube_url(url2), "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        self.assertEqual(validate_youtube_url(url3), "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
 
     def test_url_validation_playlist_rejection(self):
         """Pure playlist URL must be rejected with 400."""
@@ -166,10 +180,22 @@ class TestReliabilityAndSafety(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("Видео недоступно в качестве ≤720p", msg)
 
+    def test_check_download_feasibility_1080p_rejected_on_720p_cap(self):
+        """Pre-check immediately rejects 1080p when server MAX_VIDEO_HEIGHT is 720."""
+        with patch.object(settings, "MAX_VIDEO_HEIGHT", 720):
+            ok, msg, _ = check_download_feasibility(
+                url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                kind="video",
+                quality="1080p"
+            )
+            self.assertFalse(ok)
+            self.assertIn("1080p отключено", msg)
+
     # 6. Cleanup protected filenames
     def test_cleanup_protected_files(self):
-        """Ensures cookies.txt, .gitkeep, README.md are strictly protected."""
+        """Ensures cookies.txt, runtime_cookies.txt, .gitkeep, README.md are strictly protected."""
         self.assertIn("cookies.txt", PROTECTED_FILENAMES)
+        self.assertIn("runtime_cookies.txt", PROTECTED_FILENAMES)
         self.assertIn(".gitkeep", PROTECTED_FILENAMES)
         self.assertIn("README.md", PROTECTED_FILENAMES)
 
@@ -198,6 +224,49 @@ class TestReliabilityAndSafety(unittest.TestCase):
         data = res.json()
         self.assertTrue(data["ok"])
         self.assertEqual(data["title"], "test_video")
+
+    # 9. Cyrillic Content-Disposition Latin-1 encoding safety
+    def test_content_disposition_cyrillic_latin1_safe(self):
+        """Ensures Cyrillic filenames do not crash Starlette latin-1 header encoding."""
+        header = make_content_disposition("Разбор_полетов_720p.mp4")
+        # Must encode cleanly in latin-1 without UnicodeEncodeError
+        encoded = header.encode("latin-1")
+        self.assertIsInstance(encoded, bytes)
+        self.assertIn("filename*=UTF-8''", header)
+
+    # 10. WebVTT cleaning and SRT conversion
+    def test_vtt_and_srt_cleaning(self):
+        """Ensures WEBVTT metadata, timestamps, HTML entities, and rolling duplicates are stripped."""
+        sample_vtt = (
+            "WEBVTT\n"
+            "Kind: captions\n"
+            "Language: ru\n\n"
+            "00:00:01.000 --> 00:00:03.500 align:start position:0%\n"
+            "<c>Привет</c> &amp; добро пожаловать!\n\n"
+            "00:00:03.500 --> 00:00:05.000\n"
+            "Привет &amp; добро пожаловать!\n"
+            "Вторая строка текста&#39;\n"
+        )
+        clean_txt = srt_to_clean_txt(sample_vtt)
+        self.assertEqual(clean_txt, "Привет & добро пожаловать!\nВторая строка текста'")
+
+        converted_srt = vtt_to_srt(sample_vtt)
+        self.assertIn("1\n00:00:01,000 --> 00:00:03,500\nПривет & добро пожаловать!", converted_srt)
+        self.assertNotIn("WEBVTT", converted_srt)
+
+    # 11. Writable runtime cookies from COOKIES_TEXT
+    def test_writable_cookies_from_text(self):
+        """Ensures COOKIES_TEXT is normalized and written to a writable file in STORAGE_DIR."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            with patch.object(settings, "STORAGE_DIR", tmp_path), \
+                 patch.object(settings, "COOKIES_FILE", ""), \
+                 patch.object(settings, "COOKIES_TEXT", ".youtube.com\\tTRUE\\t/\\tTRUE\\t0\\tSID\\t12345"):
+                cookie_file = _prepare_writable_cookiefile()
+                self.assertIsNotNone(cookie_file)
+                content = Path(cookie_file).read_text(encoding="utf-8")
+                self.assertTrue(content.startswith("# Netscape HTTP Cookie File"))
+                self.assertIn(".youtube.com", content)
 
 
 if __name__ == "__main__":

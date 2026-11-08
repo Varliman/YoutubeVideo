@@ -1,6 +1,5 @@
 """Temporary file cleanup utilities to prevent disk exhaustion."""
 
-import os
 import time
 import shutil
 import logging
@@ -10,13 +9,15 @@ from pathlib import Path
 logger = logging.getLogger("cleanup")
 
 # Protected system files that must NEVER be deleted by cleanup (module-level constant)
-PROTECTED_FILENAMES = {"cookies.txt", ".gitkeep", "README.md"}
+PROTECTED_FILENAMES = {"cookies.txt", "runtime_cookies.txt", ".gitkeep", "README.md"}
 
 
 def delete_file_safely(file_or_dir_path: str | Path):
     """Safely removes a file or directory without raising exceptions."""
     try:
         p = Path(file_or_dir_path)
+        if p.name in PROTECTED_FILENAMES:
+            return
         if p.is_file():
             p.unlink(missing_ok=True)
             logger.info(f"Cleaned up temporary file: {p.name}")
@@ -55,9 +56,16 @@ def cleanup_old_files(storage_dir: Path, max_age_seconds: int):
 
 def start_periodic_cleanup_thread(storage_dir: Path, interval_minutes: int, retention_minutes: int):
     """Starts a daemon thread that periodically purges old temporary download files."""
+    interval_secs = max(interval_minutes, 1) * 60
+    retention_secs = max(retention_minutes, 1) * 60
+
+    # Perform an immediate cleanup pass of any leftover expired files from previous runs
+    try:
+        cleanup_old_files(storage_dir, retention_secs)
+    except Exception as e:
+        logger.debug(f"Initial cleanup error: {e}")
+
     def worker():
-        interval_secs = max(interval_minutes, 1) * 60
-        retention_secs = max(retention_minutes, 1) * 60
         while True:
             try:
                 time.sleep(interval_secs)

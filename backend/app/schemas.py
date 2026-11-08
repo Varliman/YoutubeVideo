@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 class AnalyzeRequest(BaseModel):
     """Payload to request video analysis."""
-    url: str = Field(..., description="YouTube video URL (watch, shorts, youtu.be, embed)")
+    url: str = Field(..., description="YouTube video URL (watch, shorts, youtu.be, embed, music)")
 
 
 class FormatItem(BaseModel):
@@ -23,13 +23,14 @@ class FormatItem(BaseModel):
 
 
 class VideoOption(BaseModel):
-    """Preset video download choice with estimated size."""
+    """Preset video download choice with estimated size and availability flag."""
     quality: str  # 1080p, 720p, 480p, 360p, best
     label: str
     ext: str = "mp4"
     filesize_approx_mb: Optional[float] = None
     filesize_str: str
     download_url: str
+    available: bool = True
 
 
 class AudioOption(BaseModel):
@@ -40,6 +41,7 @@ class AudioOption(BaseModel):
     filesize_approx_mb: Optional[float] = None
     filesize_str: str
     download_url: str
+    available: bool = True
 
 
 class SubtitleOption(BaseModel):

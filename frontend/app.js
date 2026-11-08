@@ -57,7 +57,7 @@ const modalDownloadBtn = document.getElementById("modalDownloadBtn");
 const toast = document.getElementById("toast");
 
 /* -------------------------------------------------------------
- * 1. Health check & Initializer
+ * 1. Health check & Keep-Alive Initializer (Render Free Spin-Down Guard)
  * ------------------------------------------------------------- */
 async function checkHealth() {
   try {
@@ -79,6 +79,8 @@ async function checkHealth() {
 
 document.addEventListener("DOMContentLoaded", () => {
   checkHealth();
+  // Periodic health check every 4 minutes while tab is open to prevent Render Free spin-down
+  setInterval(checkHealth, 240000);
   setupEventListeners();
 });
 
@@ -109,42 +111,30 @@ function setupEventListeners() {
         clearBtn.classList.remove("hidden");
         urlInput.focus();
       }
-    } catch (e) {
+    } catch (err) {
       showToast("Не удалось прочитать буфер обмена");
     }
   });
 
-  // Sample chips
-  document.querySelectorAll(".chip-btn").forEach((chip) => {
-    chip.addEventListener("click", () => {
-      const url = chip.getAttribute("data-url");
-      urlInput.value = url;
-      clearBtn.classList.remove("hidden");
-      analyzeForm.dispatchEvent(new Event("submit"));
-    });
-  });
-
-  // Form submit
-  analyzeForm.addEventListener("submit", handleAnalyzeSubmit);
-
   // Alert close
   alertCloseBtn.addEventListener("click", hideAlert);
 
-  // Copy video URL
-  copyUrlBtn.addEventListener("click", () => {
-    if (currentVideoData && currentVideoData.original_url) {
-      navigator.clipboard.writeText(currentVideoData.original_url);
-      showToast("Ссылка скопирована в буфер обмена!");
-    }
+  // Form submission
+  analyzeForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const url = urlInput.value.trim();
+    if (!url) return;
+    await performAnalysis(url);
   });
 
   // Tabs switching
   document.querySelectorAll(".tab-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
-      const targetId = btn.getAttribute("data-tab");
       document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
       document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
+
       btn.classList.add("active");
+      const targetId = btn.getAttribute("data-tab");
       const panel = document.getElementById(targetId);
       if (panel) panel.classList.add("active");
     });
@@ -153,22 +143,32 @@ function setupEventListeners() {
   // Modal actions
   modalCloseBtn.addEventListener("click", closeModal);
   modalBackdrop.addEventListener("click", closeModal);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !transcriptModal.classList.contains("hidden")) {
+      closeModal();
+    }
+  });
+
   modalCopyBtn.addEventListener("click", () => {
     if (currentTranscriptText) {
       navigator.clipboard.writeText(currentTranscriptText);
-      showToast("Текст расшифровки скопирован!");
+      showToast("Текст расшифровки скопирован в буфер обмена!");
+    }
+  });
+
+  // Copy video URL button
+  copyUrlBtn.addEventListener("click", () => {
+    if (currentVideoData && currentVideoData.original_url) {
+      navigator.clipboard.writeText(currentVideoData.original_url);
+      showToast("Ссылка на видео скопирована в буфер!");
     }
   });
 }
 
 /* -------------------------------------------------------------
- * 3. Video Analysis API
+ * 3. Main Video Analysis
  * ------------------------------------------------------------- */
-async function handleAnalyzeSubmit(e) {
-  e.preventDefault();
-  const rawUrl = urlInput.value.trim();
-  if (!rawUrl) return;
-
+async function performAnalysis(url) {
   hideAlert();
   setLoading(true);
   resultSection.classList.add("hidden");
@@ -178,20 +178,27 @@ async function handleAnalyzeSubmit(e) {
     const res = await fetch("/api/analyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: rawUrl }),
+      body: JSON.stringify({ url }),
     });
 
-    const data = await res.json();
-
     if (!res.ok) {
-      throw new Error(data.detail || "Произошла ошибка при анализе видео.");
+      let errorMsg = "Не удалось проанализировать видео";
+      try {
+        const errorData = await res.json();
+        errorMsg = errorData.detail || errorMsg;
+      } catch (e) {
+        errorMsg = `Ошибка сервера (${res.status} ${res.statusText})`;
+      }
+      showAlert("Ошибка анализа", errorMsg);
+      return;
     }
 
+    const data = await res.json();
     currentVideoData = data;
     renderResults(data);
-    resultSection.classList.remove("hidden");
+    checkHealth();
   } catch (err) {
-    showAlert("Ошибка анализа", err.message);
+    showAlert("Ошибка сети", `Не удалось связаться с сервером: ${err.message}`);
   } finally {
     setLoading(false);
     skeletonLoader.classList.add("hidden");
@@ -199,203 +206,161 @@ async function handleAnalyzeSubmit(e) {
 }
 
 /* -------------------------------------------------------------
- * 4. Render Results View
+ * 4. Render UI Components
  * ------------------------------------------------------------- */
 function renderResults(data) {
-  // Video thumbnail & duration
-  videoThumb.src = data.thumbnail || "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>";
+  // Populate video details
+  videoThumb.src = data.thumbnail || "";
   videoThumb.alt = data.title;
   videoDuration.textContent = data.duration_str;
-
-  // Title & Channel
   videoTitle.textContent = data.title;
+
   channelName.textContent = data.channel;
   if (data.channel_url) {
     channelLink.href = data.channel_url;
-    channelLink.style.display = "inline-flex";
+    channelLink.classList.remove("hidden");
   } else {
-    channelLink.style.display = "none";
+    channelLink.classList.add("hidden");
   }
 
-  // Publish date & views
-  uploadDate.textContent = data.upload_date ? `Опубликовано: ${data.upload_date}` : "Дата неизвестна";
-  viewCount.textContent = data.view_count ? `${data.view_count.toLocaleString("ru-RU")} просмотров` : "— просмотров";
-
-  // Original Link
+  uploadDate.textContent = data.upload_date || "Не указана";
+  viewCount.textContent =
+    data.view_count !== null && data.view_count !== undefined
+      ? data.view_count.toLocaleString("ru-RU")
+      : "Скрыто";
   originalVideoLink.href = data.original_url;
-
-  // Description
   videoDescription.textContent = data.description || "Описание отсутствует.";
 
-  // 1. Render Video Options
-  renderVideoOptions(data.video_options, data.original_url);
+  // Render tabs
+  renderVideoOptions(data.video_options);
+  renderAudioOptions(data.audio_options);
+  renderSubtitles(data.subtitle_options);
+  renderFormatsTable(data.all_formats);
 
-  // 2. Render Audio Options
-  renderAudioOptions(data.audio_options, data.original_url);
-
-  // 3. Render Subtitles Options
-  renderSubtitlesOptions(data.subtitle_options, data.original_url);
-
-  // 4. Render Raw Formats Table
-  renderRawFormatsTable(data.all_formats);
+  // Reveal result
+  resultSection.classList.remove("hidden");
+  resultSection.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-function renderVideoOptions(options, url) {
+function renderVideoOptions(options) {
   videoOptionsGrid.innerHTML = "";
   if (!options || options.length === 0) {
-    videoOptionsGrid.innerHTML = `<p class="empty-msg">Варианты видео не найдены.</p>`;
+    videoOptionsGrid.innerHTML = "<p class='text-muted'>Доступные видеопотоки не найдены.</p>";
     return;
   }
 
   options.forEach((opt) => {
+    const isAvailable = opt.available !== false;
     const card = document.createElement("div");
-    card.className = "download-card";
+    card.className = "option-card";
     card.innerHTML = `
-      <div class="download-card-header">
-        <span class="card-quality-badge">${escapeHtml(opt.quality.toUpperCase())}</span>
-        <span class="card-format-tag">${escapeHtml(opt.ext)}</span>
+      <div class="option-header">
+        <span class="option-badge">${escapeHtml(opt.quality)}</span>
+        <span class="option-size">${isAvailable ? "~" : ""}${escapeHtml(opt.filesize_str)}</span>
       </div>
-      <div class="card-details">
-        <span>${escapeHtml(opt.label)}</span>
-        <span class="card-size">${escapeHtml(opt.filesize_str)}</span>
-      </div>
-      <button type="button" class="download-action-btn" data-url="${escapeHtml(opt.download_url)}">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-          <polyline points="7 10 12 15 17 10"></polyline>
-          <line x1="12" y1="15" x2="12" y2="3"></line>
-        </svg>
-        <span>Скачать видео</span>
+      <div class="option-title">${escapeHtml(opt.label)}</div>
+      <button type="button" class="download-stream-btn" data-url="${escapeHtml(opt.download_url)}" ${!isAvailable ? "disabled" : ""}>
+        <span>${isAvailable ? "Скачать MP4" : "Недоступно"}</span>
       </button>
     `;
 
-    const btn = card.querySelector(".download-action-btn");
-    btn.addEventListener("click", () => triggerDownload(btn, opt.download_url));
+    if (isAvailable) {
+      card.querySelector(".download-stream-btn").addEventListener("click", function () {
+        triggerDownload(this, opt.download_url);
+      });
+    }
 
     videoOptionsGrid.appendChild(card);
   });
 }
 
-function renderAudioOptions(options, url) {
+function renderAudioOptions(options) {
   audioOptionsGrid.innerHTML = "";
   if (!options || options.length === 0) {
-    audioOptionsGrid.innerHTML = `<p class="empty-msg">Варианты аудио не найдены.</p>`;
+    audioOptionsGrid.innerHTML = "<p class='text-muted'>Доступные аудиопотоки не найдены.</p>";
     return;
   }
 
   options.forEach((opt) => {
+    const isAvailable = opt.available !== false;
     const card = document.createElement("div");
-    card.className = "download-card";
+    card.className = "option-card";
     card.innerHTML = `
-      <div class="download-card-header">
-        <span class="card-quality-badge">${escapeHtml(opt.format.toUpperCase())}</span>
-        <span class="card-format-tag">${opt.bitrate_kbps} kbps</span>
+      <div class="option-header">
+        <span class="option-badge">${escapeHtml(opt.format.toUpperCase())}</span>
+        <span class="option-size">~${escapeHtml(opt.filesize_str)}</span>
       </div>
-      <div class="card-details">
-        <span>${escapeHtml(opt.label)}</span>
-        <span class="card-size">${escapeHtml(opt.filesize_str)}</span>
-      </div>
-      <button type="button" class="download-action-btn" data-url="${escapeHtml(opt.download_url)}">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-          <polyline points="7 10 12 15 17 10"></polyline>
-          <line x1="12" y1="15" x2="12" y2="3"></line>
-        </svg>
-        <span>Скачать ${opt.format.toUpperCase()}</span>
+      <div class="option-title">${escapeHtml(opt.label)}</div>
+      <button type="button" class="download-stream-btn" data-url="${escapeHtml(opt.download_url)}" ${!isAvailable ? "disabled" : ""}>
+        <span>${isAvailable ? "Скачать " + escapeHtml(opt.format.toUpperCase()) : "Требуется FFmpeg"}</span>
       </button>
     `;
 
-    const btn = card.querySelector(".download-action-btn");
-    btn.addEventListener("click", () => triggerDownload(btn, opt.download_url));
+    if (isAvailable) {
+      card.querySelector(".download-stream-btn").addEventListener("click", function () {
+        triggerDownload(this, opt.download_url);
+      });
+    }
 
     audioOptionsGrid.appendChild(card);
   });
 }
 
-function renderSubtitlesOptions(options, url) {
-  if (!options || options.length === 0) {
+function renderSubtitles(subtitles) {
+  subtitlesContent.innerHTML = "";
+  if (!subtitles || subtitles.length === 0) {
     subtitlesContent.innerHTML = `
-      <div class="subtitles-layout">
-        <p class="empty-msg" style="color: var(--text-muted); padding: 12px 0;">
-          ⚠️ Субтитры или автоматические расшифровки для этого видео отсутствуют на YouTube.
-        </p>
+      <div class="alert-box" style="margin-top:0;">
+        <span class="alert-icon">ℹ️</span>
+        <div class="alert-content">
+          <p class="alert-desc">Для данного видео не найдено ручных или автоматически сгенерированных субтитров.</p>
+        </div>
       </div>
     `;
     return;
   }
 
-  let selectOptions = options
-    .map((sub, idx) => `<option value="${idx}">${escapeHtml(sub.name)} (${sub.lang})</option>`)
-    .join("");
-
-  subtitlesContent.innerHTML = `
-    <div class="subtitles-layout">
-      <div class="subtitles-controls">
-        <div class="form-group" style="flex: 1; min-width: 220px;">
-          <label class="form-label" for="subLangSelect">Языковая дорожка</label>
-          <select id="subLangSelect" class="select-control">
-            ${selectOptions}
-          </select>
-        </div>
-
-        <div class="form-group">
-          <label class="form-label">Формат файла</label>
-          <div class="format-radios">
-            <label class="radio-chip">
-              <input type="radio" name="subFormat" value="txt" checked>
-              <span>Чистый текст (.txt)</span>
-            </label>
-            <label class="radio-chip">
-              <input type="radio" name="subFormat" value="srt">
-              <span>Субтитры с таймкодами (.srt)</span>
-            </label>
-          </div>
-        </div>
+  subtitles.forEach((sub) => {
+    const item = document.createElement("div");
+    item.className = "subtitle-item";
+    item.innerHTML = `
+      <div class="subtitle-lang-info">
+        <span class="option-badge">${escapeHtml(sub.lang)}</span>
+        <span><strong>${escapeHtml(sub.name)}</strong></span>
       </div>
-
-      <div class="subtitles-actions">
-        <button type="button" id="downloadSubBtn" class="btn btn-primary">
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-            <polyline points="7 10 12 15 17 10"></polyline>
-            <line x1="12" y1="15" x2="12" y2="3"></line>
-          </svg>
-          Скачать файл
+      <div class="subtitle-actions">
+        <button type="button" class="btn btn-secondary preview-sub-btn">
+          <span>Предпросмотр</span>
         </button>
-        <button type="button" id="previewSubBtn" class="btn btn-secondary">
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
-            <circle cx="12" cy="12" r="3"></circle>
-          </svg>
-          Быстрый просмотр текста
+        <button type="button" class="btn btn-primary download-txt-btn">
+          <span>Скачать .txt</span>
+        </button>
+        <button type="button" class="btn btn-secondary download-srt-btn">
+          <span>Скачать .srt</span>
         </button>
       </div>
-    </div>
-  `;
+    `;
 
-  const subSelect = document.getElementById("subLangSelect");
-  const downloadSubBtn = document.getElementById("downloadSubBtn");
-  const previewSubBtn = document.getElementById("previewSubBtn");
+    item.querySelector(".preview-sub-btn").addEventListener("click", () => {
+      openTranscriptModal(sub);
+    });
 
-  downloadSubBtn.addEventListener("click", () => {
-    const selectedIdx = parseInt(subSelect.value, 10);
-    const sub = options[selectedIdx];
-    const fmt = document.querySelector('input[name="subFormat"]:checked').value;
-    const downloadUrl = fmt === "txt" ? sub.txt_url : sub.srt_url;
-    triggerDownload(downloadSubBtn, downloadUrl);
-  });
+    item.querySelector(".download-txt-btn").addEventListener("click", function () {
+      triggerDownload(this, sub.txt_url);
+    });
 
-  previewSubBtn.addEventListener("click", () => {
-    const selectedIdx = parseInt(subSelect.value, 10);
-    const sub = options[selectedIdx];
-    openTranscriptModal(sub);
+    item.querySelector(".download-srt-btn").addEventListener("click", function () {
+      triggerDownload(this, sub.srt_url);
+    });
+
+    subtitlesContent.appendChild(item);
   });
 }
 
-function renderRawFormatsTable(formats) {
+function renderFormatsTable(formats) {
   formatsTableBody.innerHTML = "";
   if (!formats || formats.length === 0) {
-    formatsTableBody.innerHTML = `<tr><td colspan="8" style="text-align:center;">Форматы не найдены</td></tr>`;
+    formatsTableBody.innerHTML = "<tr><td colspan='8'>Информация о форматах отсутствует</td></tr>";
     return;
   }
 
@@ -460,7 +425,14 @@ async function triggerDownload(btn, url) {
     try {
       const checkData = await checkRes.json();
       if (checkData.title) {
-        const ext = kind === "audio" ? (format || "mp3") : (kind === "transcript" ? (lang ? `${lang}.${format || "txt"}` : (format || "txt")) : "mp4");
+        const ext =
+          kind === "audio"
+            ? format || "mp3"
+            : kind === "transcript"
+              ? lang
+                ? `${lang}.${format || "txt"}`
+                : format || "txt"
+              : "mp4";
         downloadFilename = `${checkData.title}.${ext}`;
       }
     } catch (e) {
@@ -490,18 +462,27 @@ async function triggerDownload(btn, url) {
 async function openTranscriptModal(subOption) {
   transcriptModal.classList.remove("hidden");
   modalTitle.textContent = `Транскрипт: ${subOption.name}`;
-  modalText.textContent = "";
+  modalText.value = "";
   modalLoading.classList.remove("hidden");
   currentTranscriptText = "";
 
   try {
     const res = await fetch(subOption.txt_url);
-    if (!res.ok) throw new Error("Не удалось загрузить текст субтитров");
+    if (!res.ok) {
+      let detail = "Не удалось загрузить текст субтитров";
+      try {
+        const errData = await res.json();
+        detail = errData.detail || detail;
+      } catch (e) {
+        detail = `Ошибка сервера (${res.status})`;
+      }
+      throw new Error(detail);
+    }
     const text = await res.text();
     currentTranscriptText = text;
-    modalText.textContent = text || "(Субтитры пусты)";
+    modalText.value = text || "(Субтитры пусты)";
   } catch (err) {
-    modalText.textContent = `Ошибка: ${err.message}`;
+    modalText.value = `Ошибка: ${err.message}`;
   } finally {
     modalLoading.classList.add("hidden");
   }
