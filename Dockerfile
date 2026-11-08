@@ -7,6 +7,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     MALLOC_ARENA_MAX=2 \
     DEBIAN_FRONTEND=noninteractive \
+    HOME=/app \
+    XDG_CACHE_HOME=/app/.cache \
+    XDG_DATA_HOME=/app/.local/share \
     PORT=8000 \
     HOST=0.0.0.0
 
@@ -21,13 +24,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install lightweight Rust PO-Token provider binary (bgutil-pot) + matching yt-dlp plugin zip
-RUN mkdir -p /etc/yt-dlp/plugins && \
-    curl -fsSL https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/latest/download/bgutil-pot-linux-x86_64 \
-    -o /usr/local/bin/bgutil-pot && chmod +x /usr/local/bin/bgutil-pot && \
-    curl -fsSL https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/latest/download/bgutil-ytdlp-pot-provider-rs.zip \
-    -o /etc/yt-dlp/plugins/bgutil-ytdlp-pot-provider-rs.zip || true
-
 # Create non-root application user for container security
 RUN groupadd -r appgroup && useradd -r -g appgroup -d /app -s /sbin/nologin appuser
 
@@ -41,12 +37,27 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.prod.txt && \
     rm -f requirements.prod.txt
 
+# Install lightweight Rust PO-Token provider binary (bgutil-pot) AND properly extract yt_dlp_plugins into site-packages
+RUN mkdir -p /etc/yt-dlp/plugins && \
+    curl -fsSL https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/latest/download/bgutil-pot-linux-x86_64 \
+    -o /usr/local/bin/bgutil-pot && chmod +x /usr/local/bin/bgutil-pot && \
+    curl -fsSL https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/latest/download/bgutil-ytdlp-pot-provider-rs.zip \
+    -o /tmp/bgutil-plugin.zip && \
+    python3 -c "import zipfile, site, shutil, pathlib; \
+sp = pathlib.Path(site.getsitepackages()[0]); \
+zp = zipfile.ZipFile('/tmp/bgutil-plugin.zip'); \
+zp.extractall('/tmp/bgutil_ext'); \
+zp.extractall('/etc/yt-dlp/plugins'); \
+[shutil.copytree(p, sp / 'yt_dlp_plugins', dirs_exist_ok=True) for p in pathlib.Path('/tmp/bgutil_ext').rglob('yt_dlp_plugins')]; \
+shutil.rmtree('/tmp/bgutil_ext', ignore_errors=True)" && \
+    rm -f /tmp/bgutil-plugin.zip || true
+
 # Copy source code and static frontend
 COPY backend/ ./backend/
 COPY frontend/ ./frontend/
 
-# Create downloads folder and assign ownership to non-root user
-RUN mkdir -p /app/downloads && chown -R appuser:appgroup /app
+# Create downloads, cache, and rustypipe snapshot directories owned by non-root user
+RUN mkdir -p /app/downloads /app/.cache /app/.local/share/rustypipe && chown -R appuser:appgroup /app
 
 # Switch to non-root user
 USER appuser

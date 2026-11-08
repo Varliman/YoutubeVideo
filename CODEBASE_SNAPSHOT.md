@@ -280,6 +280,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     MALLOC_ARENA_MAX=2 \
     DEBIAN_FRONTEND=noninteractive \
+    HOME=/app \
+    XDG_CACHE_HOME=/app/.cache \
+    XDG_DATA_HOME=/app/.local/share \
     PORT=8000 \
     HOST=0.0.0.0
 
@@ -294,13 +297,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install lightweight Rust PO-Token provider binary (bgutil-pot) + matching yt-dlp plugin zip
-RUN mkdir -p /etc/yt-dlp/plugins && \
-    curl -fsSL https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/latest/download/bgutil-pot-linux-x86_64 \
-    -o /usr/local/bin/bgutil-pot && chmod +x /usr/local/bin/bgutil-pot && \
-    curl -fsSL https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/latest/download/bgutil-ytdlp-pot-provider-rs.zip \
-    -o /etc/yt-dlp/plugins/bgutil-ytdlp-pot-provider-rs.zip || true
-
 # Create non-root application user for container security
 RUN groupadd -r appgroup && useradd -r -g appgroup -d /app -s /sbin/nologin appuser
 
@@ -314,12 +310,27 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.prod.txt && \
     rm -f requirements.prod.txt
 
+# Install lightweight Rust PO-Token provider binary (bgutil-pot) AND properly extract yt_dlp_plugins into site-packages
+RUN mkdir -p /etc/yt-dlp/plugins && \
+    curl -fsSL https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/latest/download/bgutil-pot-linux-x86_64 \
+    -o /usr/local/bin/bgutil-pot && chmod +x /usr/local/bin/bgutil-pot && \
+    curl -fsSL https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/latest/download/bgutil-ytdlp-pot-provider-rs.zip \
+    -o /tmp/bgutil-plugin.zip && \
+    python3 -c "import zipfile, site, shutil, pathlib; \
+sp = pathlib.Path(site.getsitepackages()[0]); \
+zp = zipfile.ZipFile('/tmp/bgutil-plugin.zip'); \
+zp.extractall('/tmp/bgutil_ext'); \
+zp.extractall('/etc/yt-dlp/plugins'); \
+[shutil.copytree(p, sp / 'yt_dlp_plugins', dirs_exist_ok=True) for p in pathlib.Path('/tmp/bgutil_ext').rglob('yt_dlp_plugins')]; \
+shutil.rmtree('/tmp/bgutil_ext', ignore_errors=True)" && \
+    rm -f /tmp/bgutil-plugin.zip || true
+
 # Copy source code and static frontend
 COPY backend/ ./backend/
 COPY frontend/ ./frontend/
 
-# Create downloads folder and assign ownership to non-root user
-RUN mkdir -p /app/downloads && chown -R appuser:appgroup /app
+# Create downloads, cache, and rustypipe snapshot directories owned by non-root user
+RUN mkdir -p /app/downloads /app/.cache /app/.local/share/rustypipe && chown -R appuser:appgroup /app
 
 # Switch to non-root user
 USER appuser
@@ -1330,46 +1341,44 @@ def _has_playable_formats(info: Optional[dict]) -> bool:
     return any(not _is_storyboard_or_non_media(f) for f in formats)
 
 
-# Client fallback profiles for yt-dlp 2026+
-# CRITICAL FIX: In yt-dlp 2026+, passing cookies causes yt-dlp to SKIP 'android_vr', 'ios', and 'android'
-# ("WARNING: Skipping client 'android_vr' since it does not support cookies"), and logged-in 'web' clients
-# are frequently forced into YouTube's SABR-only experiment (returning 0 downloadable URLs!).
-# Therefore, we try cookie-free mobile/VR clients FIRST, then cookie-enabled web_safari/web_embedded/mweb!
+# Client fallback profiles for yt-dlp 2026.10+
+# Note: In yt-dlp 2026.10.21+, 'tv_samsung', 'visionos', and 'web_embedded' are the official clients
+# that route around YouTube's SABR-only streaming restriction while supporting authentication/PO tokens!
 _CLIENT_PROFILES: list[dict] = [
-    # Profile 1: Cookie-free Android VR + iOS + MWeb + Web Embedded (avoids SABR & cookie-skipping!)
-    {
-        "use_cookies": False,
-        "use_proxy": True,
-        "youtube_args": {
-            "player_client": ["android_vr", "ios", "web_embedded", "mweb"],
-            "formats": ["missing_pot"],
-        },
-    },
-    # Profile 2: Cookie-enabled Web Safari + Web Embedded + MWeb + Web (for 18+ or cookie-gated IPs)
+    # Profile 1: Authenticated (when cookies exist) using 2026.10+ SABR-bypassing clients (tv_samsung, visionos, web_embedded, web_safari, mweb)
     {
         "use_cookies": True,
         "use_proxy": True,
         "youtube_args": {
-            "player_client": ["web_safari", "web_embedded", "mweb", "web"],
+            "player_client": ["default", "tv_samsung", "visionos", "web_embedded", "web_safari", "mweb", "web_creator"],
             "formats": ["missing_pot"],
         },
     },
-    # Profile 3: Cookie-free Android + iOS + MWeb with duplicate & missing_pot unlocked
+    # Profile 2: Cookie-free mobile/VR clients (android_vr, ios, tv_samsung, visionos) — works when cookies trigger account-level SABR
     {
         "use_cookies": False,
         "use_proxy": True,
         "youtube_args": {
-            "player_client": ["android", "android_vr", "ios", "mweb", "web_safari"],
-            "formats": ["missing_pot", "duplicate"],
+            "player_client": ["android_vr", "tv_samsung", "visionos", "ios", "web_embedded", "mweb"],
+            "formats": ["missing_pot"],
         },
     },
-    # Profile 4: Direct connection without proxy (in case user's PROXY_URL blocks googlevideo streams)
+    # Profile 3: Authenticated WITHOUT proxy (in case user's PROXY_URL is flagged by YouTube or drops googlevideo streams, while Render IP + Cookies + PO-Token works!)
+    {
+        "use_cookies": True,
+        "use_proxy": False,
+        "youtube_args": {
+            "player_client": ["default", "tv_samsung", "visionos", "web_embedded", "web_safari", "mweb"],
+            "formats": ["missing_pot"],
+        },
+    },
+    # Profile 4: Cookie-free WITHOUT proxy (in case PROXY_URL is dead/flagged, using Render IP + bgutil-pot PO Token + android_vr/tv_samsung)
     {
         "use_cookies": False,
         "use_proxy": False,
         "youtube_args": {
-            "player_client": ["android_vr", "ios", "web_embedded", "mweb"],
-            "formats": ["missing_pot"],
+            "player_client": ["android_vr", "tv_samsung", "visionos", "ios", "web_embedded", "mweb"],
+            "formats": ["missing_pot", "duplicate"],
         },
     },
 ]
@@ -1378,27 +1387,32 @@ _CLIENT_PROFILES: list[dict] = [
 def _extract_with_client_fallbacks(url: str, base_extra_opts: dict, download: bool = False) -> dict:
     """
     Executes yt-dlp extract_info with automatic fallback across client profiles
-    (both without cookies to unlock android_vr/ios and with cookies for 18+/authenticated streams).
+    (with/without cookies and with/without proxy).
     """
     has_cookies_configured = bool(
         settings.COOKIES_FILE or settings.COOKIES_TEXT or settings.COOKIES_FROM_BROWSER
     )
     has_proxy_configured = bool(settings.PROXY_URL)
     last_exc = None
+    seen_configs = set()
 
     for idx, profile in enumerate(_CLIENT_PROFILES):
-        use_cookies = profile.get("use_cookies", True)
-        use_proxy = profile.get("use_proxy", True)
+        use_cookies = profile.get("use_cookies", True) and has_cookies_configured
+        use_proxy = profile.get("use_proxy", True) and has_proxy_configured
 
-        # Skip cookie profile if no cookies are configured
-        if use_cookies and not has_cookies_configured and idx == 1:
+        config_key = (use_cookies, use_proxy, tuple(profile["youtube_args"].get("player_client", [])))
+        if config_key in seen_configs:
             continue
-        # Skip non-proxy fallback if no proxy was configured in the first place
-        if not use_proxy and not has_proxy_configured:
-            continue
+        seen_configs.add(config_key)
 
         extra = dict(base_extra_opts)
-        extra["extractor_args"] = {"youtube": dict(profile["youtube_args"])}
+        extractor_args = {"youtube": dict(profile["youtube_args"])}
+        # Point bgutil PO Token plugin to local Rust server / CLI binary if available
+        if shutil.which("bgutil-pot"):
+            extractor_args["youtubepot-bgutilhttp"] = {"base_url": ["http://127.0.0.1:4416"]}
+            extractor_args["youtubepot-bgutilscript"] = {"script_path": [shutil.which("bgutil-pot")]}
+        extra["extractor_args"] = extractor_args
+
         opts = get_ydl_base_opts(extra, use_cookies=use_cookies, use_proxy=use_proxy)
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -1418,22 +1432,23 @@ def _extract_with_client_fallbacks(url: str, base_extra_opts: dict, download: bo
 
     # Final fallback for metadata/subtitles if all video stream profiles were blocked
     if not download:
-        try:
-            fallback_extra = dict(base_extra_opts)
-            fallback_extra["ignore_no_formats_error"] = True
-            fallback_extra["extractor_args"] = {
-                "youtube": {
-                    "player_client": ["default", "web_embedded", "mweb", "ios"],
-                    "formats": ["missing_pot"],
+        for try_proxy in ([True, False] if has_proxy_configured else [False]):
+            try:
+                fallback_extra = dict(base_extra_opts)
+                fallback_extra["ignore_no_formats_error"] = True
+                fallback_extra["extractor_args"] = {
+                    "youtube": {
+                        "player_client": ["default", "tv_samsung", "visionos", "web_embedded", "mweb"],
+                        "formats": ["missing_pot"],
+                    }
                 }
-            }
-            opts = get_ydl_base_opts(fallback_extra, use_cookies=has_cookies_configured, use_proxy=has_proxy_configured)
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                if info:
-                    return info
-        except Exception as e:
-            last_exc = e
+                opts = get_ydl_base_opts(fallback_extra, use_cookies=has_cookies_configured, use_proxy=try_proxy)
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    if info:
+                        return info
+            except Exception as e:
+                last_exc = e
 
     if last_exc:
         raise last_exc
@@ -1586,7 +1601,7 @@ def check_download_feasibility(
         want = min(target_h, cap)
         formats = [f for f in (info.get("formats") or []) if not _is_storyboard_or_non_media(f)]
         heights = [f.get("height") or 0 for f in formats]
-        if heights and not any(0 < h <= want for h in heights):
+        if not any(0 < h <= want for h in heights):
             return False, f"Видео недоступно в качестве ≤{want}p.", title
 
     elif kind == "transcript" and lang:
@@ -1680,9 +1695,64 @@ def format_duration(seconds: Optional[int | float]) -> str:
     return f"{minutes:02d}:{secs:02d}"
 
 
+_NETSCAPE_COOKIE_REGEX = re.compile(
+    r"((?:#HttpOnly_)?\.?[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\s+"
+    r"(TRUE|FALSE)\s+"
+    r"(/\S*)\s+"
+    r"(TRUE|FALSE)\s+"
+    r"(\d+)\s+"
+    r"([^\s\t]+)"
+    r"(?:\s+([^\s\t]+?(?=\s+(?:#HttpOnly_)?\.?[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\s+(?:TRUE|FALSE)\s+/|$)))?"
+)
+
+
+def _normalize_netscape_cookies(raw_text: str) -> str:
+    """
+    Repairs Netscape cookies.txt content pasted into single-line cloud Environment Variable boxes
+    (such as Render's COOKIES_TEXT input, which often strips newlines or replaces tabs with spaces).
+    Also strips '#HttpOnly_' prefixes so MozillaCookieJar loads every HttpOnly session cookie
+    (__Secure-3PSID, LOGIN_INFO, SID, etc.) without skipping them as comments.
+    """
+    raw = raw_text.strip()
+    if "\\n" in raw and "\n" not in raw:
+        raw = raw.replace("\\n", "\n")
+    if "\\t" in raw and "\t" not in raw:
+        raw = raw.replace("\\t", "\t")
+
+    cleaned_lines = []
+    for line in raw.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if s.startswith("#") and not s.lower().startswith("#httponly_"):
+            continue
+        cleaned_lines.append(s)
+
+    joined = " ".join(cleaned_lines)
+    matches = list(_NETSCAPE_COOKIE_REGEX.finditer(joined))
+    if matches:
+        out_lines = ["# Netscape HTTP Cookie File"]
+        for m in matches:
+            dom, _flag, path, sec, exp, name, val = m.groups()
+            if dom.lower().startswith("#httponly_"):
+                dom = dom[10:]
+            if not dom.startswith("."):
+                dom = "." + dom
+            flag_str = "TRUE" if dom.startswith(".") else "FALSE"
+            val = val or ""
+            out_lines.append(f"{dom}\t{flag_str}\t{path}\t{sec}\t{exp}\t{name}\t{val}")
+        return "\n".join(out_lines) + "\n"
+
+    # Fallback if text is already tab-formatted or custom
+    if not raw.startswith("# Netscape HTTP Cookie File"):
+        raw = "# Netscape HTTP Cookie File\n" + raw
+    return raw + "\n"
+
+
 def _prepare_writable_cookiefile() -> Optional[str]:
     """
-    Ensures yt-dlp always receives a WRITABLE cookiefile path inside STORAGE_DIR.
+    Ensures yt-dlp always receives a WRITABLE, strictly tab-formatted Netscape cookiefile
+    path inside STORAGE_DIR.
     """
     runtime_cookies = settings.STORAGE_DIR / "runtime_cookies.txt"
 
@@ -1691,8 +1761,9 @@ def _prepare_writable_cookiefile() -> Optional[str]:
             try:
                 src_path = Path(settings.COOKIES_FILE).resolve()
                 if src_path != runtime_cookies.resolve():
-                    if not runtime_cookies.exists() or src_path.stat().st_mtime > runtime_cookies.stat().st_mtime:
-                        shutil.copyfile(src_path, runtime_cookies)
+                    raw_file_text = src_path.read_text(encoding="utf-8", errors="ignore")
+                    norm_text = _normalize_netscape_cookies(raw_file_text)
+                    runtime_cookies.write_text(norm_text, encoding="utf-8")
                 return str(runtime_cookies)
             except Exception as e:
                 logger.warning(f"Could not copy COOKIES_FILE to writable storage: {e}")
@@ -1700,13 +1771,11 @@ def _prepare_writable_cookiefile() -> Optional[str]:
 
         elif settings.COOKIES_TEXT:
             try:
-                raw_text = settings.COOKIES_TEXT.strip()
-                if "\\n" in raw_text and "\n" not in raw_text:
-                    raw_text = raw_text.replace("\\n", "\n")
-                if not raw_text.startswith("# Netscape HTTP Cookie File"):
-                    raw_text = "# Netscape HTTP Cookie File\n" + raw_text
-                if not runtime_cookies.exists() or runtime_cookies.read_text(encoding="utf-8", errors="ignore").strip() != raw_text.strip():
-                    runtime_cookies.write_text(raw_text + "\n", encoding="utf-8")
+                norm_text = _normalize_netscape_cookies(settings.COOKIES_TEXT)
+                if not runtime_cookies.exists() or runtime_cookies.read_text(encoding="utf-8", errors="ignore") != norm_text:
+                    runtime_cookies.write_text(norm_text, encoding="utf-8")
+                    cookie_count = max(0, len(norm_text.strip().splitlines()) - 1)
+                    logger.info(f"Normalized COOKIES_TEXT into {cookie_count} valid Netscape cookies")
                 return str(runtime_cookies)
             except Exception as e:
                 logger.warning(f"Could not write COOKIES_TEXT to runtime_cookies.txt: {e}")
@@ -1720,9 +1789,8 @@ def get_ydl_base_opts(
     use_proxy: bool = True,
 ) -> dict:
     """
-    Constructs base yt-dlp options including explicit Node.js runtime activation
-    (CRITICAL for yt-dlp 2026+ which only enables deno by default!), optional proxy/cookies
-    toggling (so android_vr and ios clients are not skipped due to cookies!), single-thread FFmpeg, and timeouts.
+    Constructs base yt-dlp options including explicit Node.js runtime activation,
+    optional proxy/cookies toggling, single-thread FFmpeg, and timeouts.
     """
     js_runtimes = {}
     node_bin = shutil.which("node") or shutil.which("nodejs")
@@ -1798,9 +1866,9 @@ def _raise_for_ydl_error(e: Exception, context_action: str = "обработке
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
-                "YouTube отклонил доступ к медиапотоку (HTTP 403 / защита от ботов). "
-                "Если у вас указаны старые COOKIES_TEXT, попробуйте обновить их из режима Инкогнито браузера "
-                "или временно очистить COOKIES_TEXT, чтобы сервер использовал мобильные клиенты android_vr/ios."
+                "YouTube запросил проверку подлинности сессии ('Sign in to confirm you’re not a bot'). "
+                "Убедитесь, что в COOKIES_TEXT вставлены актуальные куки YouTube (экспортированные из вкладки Инкогнито, "
+                "после чего вкладку нужно сразу закрыть, чтобы YouTube не сбросил сессию)."
             )
         )
     elif "requested format is not available" in lower_msg:
@@ -1808,8 +1876,7 @@ def _raise_for_ydl_error(e: Exception, context_action: str = "обработке
             status_code=HTTP_422_STATUS,
             detail=(
                 f"Видеопоток в выбранном качестве (лимит ≤{settings.MAX_VIDEO_HEIGHT}p) недоступен. "
-                "Если в настройках Render указан COOKIES_TEXT, аккаунт мог попасть под эксперимент SABR от YouTube — "
-                "попробуйте удалить или обновить COOKIES_TEXT или проверить PROXY_URL."
+                "Проверьте, что куки в COOKIES_TEXT не истекли, либо обновите их через окно Инкогнито."
             )
         )
     elif "file is larger than max-filesize" in lower_msg:
@@ -1836,13 +1903,13 @@ def _subtitle_sort_key(sub: SubtitleOption) -> Tuple[int, int, str]:
     """
     lang_low = sub.lang.lower()
     if lang_low == "ru" or lang_low.startswith("ru-") or lang_low.startswith("ru_"):
-        lang_Order = 0
+        lang_order = 0
     elif lang_low == "en" or lang_low.startswith("en-") or lang_low.startswith("en_"):
-        lang_Order = 1
+        lang_order = 1
     else:
-        lang_Order = 2
+        lang_order = 2
     auto_order = 1 if sub.is_auto else 0
-    return (lang_Order, auto_order, sub.name.lower())
+    return (lang_order, auto_order, sub.name.lower())
 
 
 def extract_video_metadata(url: str) -> AnalyzeResponse:
@@ -1939,7 +2006,6 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
     video_options: list[VideoOption] = []
     for q_key, q_label, max_h, is_allowed_by_server in quality_specs:
         effective_cap = max_h or server_cap
-        # Keep video buttons clickable whenever allowed by server height cap (unless available_heights explicitly shows only > effective_cap)
         has_compatible_stream = (not available_heights) or any(0 < h <= effective_cap for h in available_heights)
         is_available = bool(is_allowed_by_server and has_compatible_stream)
 
@@ -2030,7 +2096,6 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
                 )
             )
 
-    # Sort subtitles so Russian and English are always at the top
     subtitle_options.sort(key=_subtitle_sort_key)
 
     raw_date = meta.get("upload_date") or ""
@@ -2060,7 +2125,6 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
 def download_video_file(url: str, quality: str = "720p") -> Tuple[Path, str, str]:
     """
     Downloads video using yt-dlp with the specified quality and merges with audio into MP4.
-    Includes automatic client fallback (cookie-free android_vr/ios first, then cookie-enabled).
     """
     if settings.MAX_VIDEO_HEIGHT and quality == "1080p" and settings.MAX_VIDEO_HEIGHT < 1080:
         raise HTTPException(
@@ -2146,7 +2210,6 @@ def download_video_file(url: str, quality: str = "720p") -> Tuple[Path, str, str
 def download_audio_file(url: str, audio_format: str = "mp3") -> Tuple[Path, str, str]:
     """
     Downloads audio using yt-dlp, extracting to MP3 or M4A.
-    Returns: (local_file_path, client_download_filename, mime_type)
     """
     if audio_format.lower() == "mp3":
         ffmpeg_bin = get_ffmpeg_path()
@@ -2565,6 +2628,7 @@ import sys
 import json
 import tempfile
 import unittest
+import http.cookiejar
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -2589,6 +2653,7 @@ from backend.app.services.youtube import (
     srt_to_clean_txt,
     vtt_to_srt,
     _prepare_writable_cookiefile,
+    _normalize_netscape_cookies,
     _is_storyboard_or_non_media,
     get_ydl_base_opts,
     _CLIENT_PROFILES,
@@ -2658,17 +2723,20 @@ class TestReliabilityAndSafety(unittest.TestCase):
         self.assertIn("js_runtimes", opts)
         self.assertIn("node", opts["js_runtimes"])
 
-    def test_client_profiles_cookie_free_first_and_no_tv(self):
-        """Ensures first profile runs with use_cookies=False so android_vr/ios are not skipped by yt-dlp."""
-        self.assertFalse(_CLIENT_PROFILES[0]["use_cookies"])
+    def test_client_profiles_have_tv_samsung_visionos_and_missing_pot(self):
+        """Ensures 2026.10+ SABR-bypassing clients (tv_samsung, visionos) and missing_pot are present."""
         has_missing_pot = False
+        has_tv_samsung = False
         for prof in _CLIENT_PROFILES:
             y_args = prof.get("youtube_args", {})
             clients = y_args.get("player_client", [])
             self.assertNotIn("tv", clients)
+            if "tv_samsung" in clients:
+                has_tv_samsung = True
             if "missing_pot" in y_args.get("formats", []):
                 has_missing_pot = True
         self.assertTrue(has_missing_pot)
+        self.assertTrue(has_tv_samsung)
 
     def test_subtitle_sorting_ru_en_first(self):
         """Ensures Russian and English subtitles sort before other languages."""
@@ -2875,19 +2943,24 @@ class TestReliabilityAndSafety(unittest.TestCase):
         self.assertEqual(srt_to_clean_txt(sample_xml), "Привет из XML")
         self.assertIn("00:00:01,500 --> 00:00:03,500", vtt_to_srt(sample_xml))
 
-    # 13. Writable runtime cookies from COOKIES_TEXT
-    def test_writable_cookies_from_text(self):
-        """Ensures COOKIES_TEXT is normalized and written to a writable file in STORAGE_DIR."""
+    # 13. Writable runtime cookies from Render single-line/space-mangled COOKIES_TEXT
+    def test_writable_cookies_from_render_mangled_text(self):
+        """Ensures COOKIES_TEXT with #HttpOnly_ and spaces/wrapped lines loads cleanly into MozillaCookieJar."""
+        mangled = (
+            "#HttpOnly_.youtube.com   TRUE   /   TRUE   1809702704\n"
+            "VISITOR_PRIVACY_METADATA   CgJVUxIEGgAgRQ%3D%3D "
+            "#HttpOnly_.youtube.com   TRUE   /   TRUE   1828710696   __Secure-3PSID   g.a000Egkmax"
+        )
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
-            with patch.object(settings, "STORAGE_DIR", tmpdir and tmp_path), \
+            with patch.object(settings, "STORAGE_DIR", tmp_path), \
                  patch.object(settings, "COOKIES_FILE", ""), \
-                 patch.object(settings, "COOKIES_TEXT", ".youtube.com\\tTRUE\\t/\\tTRUE\\t0\\tSID\\t12345"):
+                 patch.object(settings, "COOKIES_TEXT", mangled):
                 cookie_file = _prepare_writable_cookiefile()
                 self.assertIsNotNone(cookie_file)
-                content = Path(cookie_file).read_text(encoding="utf-8")
-                self.assertTrue(content.startswith("# Netscape HTTP Cookie File"))
-                self.assertIn(".youtube.com", content)
+                cj = http.cookiejar.MozillaCookieJar(cookie_file)
+                cj.load(ignore_discard=True, ignore_expires=True)
+                self.assertEqual(len(cj), 2)
 
 
 if __name__ == "__main__":

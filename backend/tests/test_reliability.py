@@ -8,6 +8,7 @@ import sys
 import json
 import tempfile
 import unittest
+import http.cookiejar
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -32,6 +33,7 @@ from backend.app.services.youtube import (
     srt_to_clean_txt,
     vtt_to_srt,
     _prepare_writable_cookiefile,
+    _normalize_netscape_cookies,
     _is_storyboard_or_non_media,
     get_ydl_base_opts,
     _CLIENT_PROFILES,
@@ -101,17 +103,20 @@ class TestReliabilityAndSafety(unittest.TestCase):
         self.assertIn("js_runtimes", opts)
         self.assertIn("node", opts["js_runtimes"])
 
-    def test_client_profiles_cookie_free_first_and_no_tv(self):
-        """Ensures first profile runs with use_cookies=False so android_vr/ios are not skipped by yt-dlp."""
-        self.assertFalse(_CLIENT_PROFILES[0]["use_cookies"])
+    def test_client_profiles_have_tv_samsung_visionos_and_missing_pot(self):
+        """Ensures 2026.10+ SABR-bypassing clients (tv_samsung, visionos) and missing_pot are present."""
         has_missing_pot = False
+        has_tv_samsung = False
         for prof in _CLIENT_PROFILES:
             y_args = prof.get("youtube_args", {})
             clients = y_args.get("player_client", [])
             self.assertNotIn("tv", clients)
+            if "tv_samsung" in clients:
+                has_tv_samsung = True
             if "missing_pot" in y_args.get("formats", []):
                 has_missing_pot = True
         self.assertTrue(has_missing_pot)
+        self.assertTrue(has_tv_samsung)
 
     def test_subtitle_sorting_ru_en_first(self):
         """Ensures Russian and English subtitles sort before other languages."""
@@ -318,19 +323,24 @@ class TestReliabilityAndSafety(unittest.TestCase):
         self.assertEqual(srt_to_clean_txt(sample_xml), "Привет из XML")
         self.assertIn("00:00:01,500 --> 00:00:03,500", vtt_to_srt(sample_xml))
 
-    # 13. Writable runtime cookies from COOKIES_TEXT
-    def test_writable_cookies_from_text(self):
-        """Ensures COOKIES_TEXT is normalized and written to a writable file in STORAGE_DIR."""
+    # 13. Writable runtime cookies from Render single-line/space-mangled COOKIES_TEXT
+    def test_writable_cookies_from_render_mangled_text(self):
+        """Ensures COOKIES_TEXT with #HttpOnly_ and spaces/wrapped lines loads cleanly into MozillaCookieJar."""
+        mangled = (
+            "#HttpOnly_.youtube.com   TRUE   /   TRUE   1809702704\n"
+            "VISITOR_PRIVACY_METADATA   CgJVUxIEGgAgRQ%3D%3D "
+            "#HttpOnly_.youtube.com   TRUE   /   TRUE   1828710696   __Secure-3PSID   g.a000Egkmax"
+        )
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
-            with patch.object(settings, "STORAGE_DIR", tmpdir and tmp_path), \
+            with patch.object(settings, "STORAGE_DIR", tmp_path), \
                  patch.object(settings, "COOKIES_FILE", ""), \
-                 patch.object(settings, "COOKIES_TEXT", ".youtube.com\\tTRUE\\t/\\tTRUE\\t0\\tSID\\t12345"):
+                 patch.object(settings, "COOKIES_TEXT", mangled):
                 cookie_file = _prepare_writable_cookiefile()
                 self.assertIsNotNone(cookie_file)
-                content = Path(cookie_file).read_text(encoding="utf-8")
-                self.assertTrue(content.startswith("# Netscape HTTP Cookie File"))
-                self.assertIn(".youtube.com", content)
+                cj = http.cookiejar.MozillaCookieJar(cookie_file)
+                cj.load(ignore_discard=True, ignore_expires=True)
+                self.assertEqual(len(cj), 2)
 
 
 if __name__ == "__main__":
