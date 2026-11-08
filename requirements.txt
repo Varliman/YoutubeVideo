@@ -4,3 +4,4 @@ pydantic>=2.6.0
 python-dotenv>=1.0.0
 yt-dlp>=2024.3.10
 imageio-ffmpeg>=0.4.9
+
