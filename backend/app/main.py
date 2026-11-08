@@ -2,6 +2,7 @@
 
 import os
 import urllib.parse
+from typing import Optional
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, Request, Query, BackgroundTasks, HTTPException, status
@@ -11,15 +12,56 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import settings
 from .limiter import rate_limiter, validate_youtube_url
-from .schemas import AnalyzeRequest, AnalyzeResponse, HealthResponse
+from .schemas import (
+    AnalyzeRequest,
+    AnalyzeResponse,
+    HealthResponse,
+    CheckDownloadResponse,
+)
 from .services.cleanup import start_periodic_cleanup_thread, delete_file_safely
 from .services.youtube import (
     get_ffmpeg_path,
+    get_active_downloads_count,
+    check_download_feasibility,
     extract_video_metadata,
     download_video_file,
     download_audio_file,
-    download_subtitles_file
+    download_subtitles_file,
 )
+
+
+def get_process_rss_mb() -> float:
+    """Measures current process Resident Set Size (RSS) memory in megabytes."""
+    # 1. Linux /proc/self/status (Render container)
+    try:
+        proc_status = Path("/proc/self/status")
+        if proc_status.exists():
+            for line in proc_status.read_text().splitlines():
+                if line.startswith("VmRSS:"):
+                    parts = line.split()
+                    return round(float(parts[1]) / 1024, 1)
+    except Exception:
+        pass
+
+    # 2. resource.getrusage (Linux / macOS POSIX)
+    try:
+        import resource
+        import sys
+        rusage = resource.getrusage(resource.RUSAGE_SELF)
+        if sys.platform == "darwin":
+            return round(rusage.ru_maxrss / (1024 * 1024), 1)
+        return round(rusage.ru_maxrss / 1024, 1)
+    except Exception:
+        pass
+
+    # 3. psutil fallback (Windows dev environment)
+    try:
+        import psutil
+        return round(psutil.Process().memory_info().rss / (1024 * 1024), 1)
+    except Exception:
+        pass
+
+    return 0.0
 
 
 @asynccontextmanager
@@ -66,18 +108,60 @@ def make_content_disposition(filename: str) -> str:
 
 @app.get("/api/health", response_model=HealthResponse)
 def health_check():
-    """Health check endpoint for container orchestrators and monitoring."""
+    """Health check endpoint with Render Free 512MB RAM diagnostics."""
     ffmpeg_bin = get_ffmpeg_path()
     cookies_present = bool(
         settings.COOKIES_FILE or settings.COOKIES_TEXT or settings.COOKIES_FROM_BROWSER
     )
+    rss_mb = get_process_rss_mb()
+    if rss_mb < 300:
+        oom_risk = "low"
+    elif rss_mb < 420:
+        oom_risk = "medium"
+    else:
+        oom_risk = "high"
+
     return HealthResponse(
         status="ok",
         ffmpeg_available=bool(ffmpeg_bin),
         proxy_configured=bool(settings.PROXY_URL),
         cookies_configured=cookies_present,
         storage_dir=str(settings.STORAGE_DIR),
+        concurrency_limit=settings.MAX_CONCURRENT_DOWNLOADS,
+        max_video_height=settings.MAX_VIDEO_HEIGHT,
+        current_active_downloads=get_active_downloads_count(),
+        rss_mb=rss_mb,
+        oom_risk=oom_risk,
     )
+
+
+@app.get("/api/check-download", response_model=CheckDownloadResponse)
+def check_download(
+    request: Request,
+    url: str = Query(..., description="YouTube URL"),
+    kind: str = Query("video", pattern="^(video|audio|transcript)$"),
+    quality: Optional[str] = Query(None),
+    format: Optional[str] = Query(None),
+    lang: Optional[str] = Query(None)
+):
+    """
+    Pre-flight check before initiating heavy file downloads.
+    Validates URL, rate limit, server concurrency slot, and FFmpeg availability.
+    Prevents silent browser download failures and avoids client memory leaks.
+    """
+    rate_limiter.check(request)
+    normalized_url = validate_youtube_url(url)
+
+    is_ok, msg = check_download_feasibility(kind=kind, quality=quality, format_str=format)
+    if not is_ok:
+        status_code = (
+            status.HTTP_503_SERVICE_UNAVAILABLE
+            if "Сервер в данный момент" in msg
+            else status.HTTP_400_BAD_REQUEST
+        )
+        raise HTTPException(status_code=status_code, detail=msg)
+
+    return CheckDownloadResponse(ok=True, message=msg)
 
 
 @app.post("/api/analyze", response_model=AnalyzeResponse)

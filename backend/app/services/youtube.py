@@ -5,6 +5,7 @@ import re
 import uuid
 import shutil
 import logging
+import threading
 from pathlib import Path
 from typing import Optional, Tuple
 import yt_dlp
@@ -19,6 +20,148 @@ from ..schemas import (
 )
 
 logger = logging.getLogger("youtube-service")
+
+
+def sanitize_error_message(error: Exception | str) -> str:
+    """Strips passwords and sensitive credentials from error messages and proxy URLs."""
+    msg = str(error)
+    # Strip user:password credentials from URLs (e.g. http://login:pass@host:port)
+    msg = re.sub(r'://([^:/\s]+):([^@/\s]+)@', r'://\1:***@', msg)
+    # Also mask raw proxy credentials if present in settings
+    if getattr(settings, "PROXY_URL", None):
+        match = re.search(r'://([^:/\s]+):([^@/\s]+)@', settings.PROXY_URL)
+        if match:
+            pwd = match.group(2)
+            if pwd and len(pwd) > 2:
+                msg = msg.replace(pwd, "***")
+    return msg
+
+
+_download_semaphore = threading.Semaphore(settings.MAX_CONCURRENT_DOWNLOADS)
+_active_downloads_count = 0
+_active_downloads_lock = threading.Lock()
+
+
+def get_active_downloads_count() -> int:
+    """Returns the number of currently active download jobs."""
+    with _active_downloads_lock:
+        return _active_downloads_count
+
+
+class DownloadSlot:
+    """
+    Context manager for acquiring a download concurrency slot.
+    Protects 512 MB RAM environments against OOM SIGKILL by rejecting concurrent requests with 503.
+    """
+    def __init__(self, blocking: bool = False, timeout: Optional[float] = None):
+        self.blocking = blocking
+        self.timeout = timeout
+        self.acquired = False
+
+    def __enter__(self):
+        global _active_downloads_count
+        if self.blocking:
+            self.acquired = _download_semaphore.acquire(blocking=True, timeout=self.timeout)
+        else:
+            self.acquired = _download_semaphore.acquire(blocking=False)
+
+        if not self.acquired:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    f"Сервер в данный момент выполняет другую загрузку. "
+                    f"Из-за лимита оперативной памяти (512 МБ RAM) загрузки выполняются строго по очереди "
+                    f"(лимит: {settings.MAX_CONCURRENT_DOWNLOADS} одновременный процесс). "
+                    f"Пожалуйста, повторите попытку через 1-2 минуты."
+                )
+            )
+        with _active_downloads_lock:
+            _active_downloads_count += 1
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        global _active_downloads_count
+        if self.acquired:
+            with _active_downloads_lock:
+                _active_downloads_count = max(0, _active_downloads_count - 1)
+            _download_semaphore.release()
+
+
+def check_download_feasibility(kind: str, quality: Optional[str] = None, format_str: Optional[str] = None) -> Tuple[bool, str]:
+    """
+    Fast pre-flight check before initiating heavy file downloads.
+    Checks concurrency slots, FFmpeg availability, and resolution caps.
+    Returns: (is_ok: bool, message: str)
+    """
+    if get_active_downloads_count() >= settings.MAX_CONCURRENT_DOWNLOADS:
+        return False, (
+            f"Сервер в данный момент выполняет другую загрузку. "
+            f"Из-за лимита оперативной памяти (512 МБ) запросы обрабатываются по очереди "
+            f"(лимит: {settings.MAX_CONCURRENT_DOWNLOADS}). Пожалуйста, повторите попытку через минуту."
+        )
+
+    if kind == "video":
+        if settings.MAX_VIDEO_HEIGHT and quality == "1080p" and settings.MAX_VIDEO_HEIGHT < 1080:
+            return False, f"Качество 1080p отключено из-за лимита сервера ({settings.MAX_VIDEO_HEIGHT}p) на Render Free (512 МБ RAM)."
+        if not get_ffmpeg_path():
+            return False, "FFmpeg не обнаружен на сервере. Объединение видео и аудио невозможно."
+
+    elif kind == "audio":
+        if (format_str or "mp3").lower() == "mp3" and not get_ffmpeg_path():
+            return False, "FFmpeg не обнаружен на сервере. Для MP3 требуется FFmpeg (выберите M4A)."
+
+    return True, "Готово к скачиванию"
+
+
+def _build_format_selector(quality: str, max_height_cap: Optional[int] = None) -> str:
+    """
+    Builds a robust yt-dlp format selector with strict downward cascading.
+    Guarantees no trailing unconstrained '/best' that could pick 4K/1080p on lower quality requests.
+    Enforces max_height_cap (e.g. 720p for Render Free 512MB RAM).
+    """
+    quality_height_map = {
+        "1080p": 1080,
+        "720p": 720,
+        "480p": 480,
+        "360p": 360,
+    }
+
+    target_h = quality_height_map.get(quality)
+
+    if max_height_cap:
+        if target_h and target_h > max_height_cap:
+            target_h = max_height_cap
+        elif quality == "best":
+            target_h = max_height_cap
+
+    if target_h == 1080:
+        return (
+            "bestvideo[height<=1080]+bestaudio/best[height<=1080]/"
+            "bestvideo[height<=720]+bestaudio/best[height<=720]/"
+            "bestvideo[height<=480]+bestaudio/best[height<=480]/"
+            "worstvideo+worstaudio/worst"
+        )
+    elif target_h == 720:
+        return (
+            "bestvideo[height<=720]+bestaudio/best[height<=720]/"
+            "bestvideo[height<=480]+bestaudio/best[height<=480]/"
+            "bestvideo[height<=360]+bestaudio/best[height<=360]/"
+            "worstvideo+worstaudio/worst"
+        )
+    elif target_h == 480:
+        return (
+            "bestvideo[height<=480]+bestaudio/best[height<=480]/"
+            "bestvideo[height<=360]+bestaudio/best[height<=360]/"
+            "worstvideo+worstaudio/worst"
+        )
+    elif target_h == 360:
+        return (
+            "bestvideo[height<=360]+bestaudio/best[height<=360]/"
+            "worstvideo+worstaudio/worst"
+        )
+    else:
+        # best with no height cap
+        return "bestvideo+bestaudio/best"
 
 
 def get_ffmpeg_path() -> Optional[str]:
@@ -68,13 +211,17 @@ def format_duration(seconds: Optional[int | float]) -> str:
 
 
 def get_ydl_base_opts(extra_opts: Optional[dict] = None) -> dict:
-    """Constructs base yt-dlp options including proxy, cookies, and timeouts."""
+    """Constructs base yt-dlp options including proxy, cookies, retries, and timeouts."""
     opts = {
         "quiet": True,
         "no_warnings": True,
         "nocheckcertificate": True,
         "noplaylist": True,
         "socket_timeout": settings.YTDLP_TIMEOUT_SECONDS,
+        "retries": 10,
+        "fragment_retries": 10,
+        "continuedl": True,
+        "http_chunk_size": 10485760,  # 10MB chunk size prevents YouTube throttling
         "extractor_args": {
             "youtube": {
                 # Using mweb, web, and tv (avoiding ios which requires strict po_token)
@@ -82,6 +229,10 @@ def get_ydl_base_opts(extra_opts: Optional[dict] = None) -> dict:
             }
         },
     }
+
+    # Force IPv4 if enabled to prevent cloud IPv6 429 rate-limiting
+    if getattr(settings, "FORCE_IPV4", True):
+        opts["source_address"] = "0.0.0.0"
 
     if settings.PROXY_URL:
         opts["proxy"] = settings.PROXY_URL
@@ -115,13 +266,15 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
     ydl_opts = get_ydl_base_opts({
         "skip_download": True,
         "ignore_no_formats_error": True,
+        "retries": 3,
+        "extractor_retries": 3,
     })
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             meta = ydl.extract_info(url, download=False)
     except yt_dlp.utils.DownloadError as e:
-        error_msg = str(e)
+        error_msg = sanitize_error_message(e)
         if "429" in error_msg:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -160,10 +313,11 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
                 detail=f"Ошибка yt-dlp при анализе видео: {error_msg}"
             )
     except Exception as e:
-        logger.error(f"Unexpected extraction error for {url}: {e}", exc_info=True)
+        sanitized_err = sanitize_error_message(e)
+        logger.error(f"Unexpected extraction error for {url}: {sanitized_err}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Внутренняя ошибка при извлечении метаданных: {str(e)}"
+            detail=f"Внутренняя ошибка при извлечении метаданных: {sanitized_err}"
         )
 
     duration = meta.get("duration") or 0
@@ -223,13 +377,22 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
     audio_est_bytes = duration * (160 * 1024 / 8) if duration > 0 else 0
 
     # 3. Build preset Video Options: 1080p, 720p, 480p, 360p, best
-    quality_specs = [
-        ("best", "Наилучшее доступное качество (Original/Best)", None),
-        ("1080p", "Full HD 1080p (MP4)", 1080),
-        ("720p", "HD 720p (MP4)", 720),
-        ("480p", "SD 480p (MP4)", 480),
-        ("360p", "Низкое 360p (MP4)", 360),
-    ]
+    if settings.MAX_VIDEO_HEIGHT and settings.MAX_VIDEO_HEIGHT < 1080:
+        quality_specs = [
+            ("best", f"Наилучшее доступное качество (до {settings.MAX_VIDEO_HEIGHT}p, Render Free)", settings.MAX_VIDEO_HEIGHT),
+            ("1080p", f"Full HD 1080p (MP4) — недоступно (лимит {settings.MAX_VIDEO_HEIGHT}p на сервере)", 1080),
+            ("720p", "HD 720p (MP4)", 720),
+            ("480p", "SD 480p (MP4)", 480),
+            ("360p", "Низкое 360p (MP4)", 360),
+        ]
+    else:
+        quality_specs = [
+            ("best", "Наилучшее доступное качество (Original/Best)", None),
+            ("1080p", "Full HD 1080p (MP4)", 1080),
+            ("720p", "HD 720p (MP4)", 720),
+            ("480p", "SD 480p (MP4)", 480),
+            ("360p", "Низкое 360p (MP4)", 360),
+        ]
 
     video_options: list[VideoOption] = []
     for q_key, q_label, max_h in quality_specs:
@@ -349,66 +512,78 @@ def download_video_file(url: str, quality: str = "720p") -> Tuple[Path, str, str
     Downloads video using yt-dlp with the specified quality and merges with audio into MP4.
     Returns: (local_file_path, client_download_filename, mime_type)
     """
-    unique_job_id = f"video_{uuid.uuid4().hex[:10]}"
-    job_dir = settings.STORAGE_DIR / unique_job_id
-    job_dir.mkdir(parents=True, exist_ok=True)
-
-    # Quality selector with flexible fallbacks (FFmpeg merges into MP4 via merge_output_format)
-    if quality == "1080p":
-        fmt = "bestvideo[height<=1080]+bestaudio/best[height<=1080]/bestvideo+bestaudio/best"
-    elif quality == "720p":
-        fmt = "bestvideo[height<=720]+bestaudio/best[height<=720]/bestvideo+bestaudio/best"
-    elif quality == "480p":
-        fmt = "bestvideo[height<=480]+bestaudio/best[height<=480]/bestvideo+bestaudio/best"
-    elif quality == "360p":
-        fmt = "bestvideo[height<=360]+bestaudio/best[height<=360]/bestvideo+bestaudio/best"
-    else:  # best
-        fmt = "bestvideo+bestaudio/best"
-
-    out_template = str(job_dir / "%(title)s_%(resolution)s.%(ext)s")
-
-    ydl_opts = get_ydl_base_opts({
-        "format": fmt,
-        "outtmpl": out_template,
-        "merge_output_format": "mp4",
-    })
-
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            title = sanitize_filename(info.get("title", "video"))
-    except Exception as e:
-        shutil.rmtree(job_dir, ignore_errors=True)
-        logger.error(f"Error downloading video {url} [{quality}]: {e}")
+    # Enforce MAX_VIDEO_HEIGHT constraint if requested quality exceeds it
+    if settings.MAX_VIDEO_HEIGHT and quality == "1080p" and settings.MAX_VIDEO_HEIGHT < 1080:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Не удалось скачать видео: {str(e)}"
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Качество 1080p отключено из-за ограничения памяти сервера (512 МБ RAM). "
+                f"Максимальное допустимое разрешение: {settings.MAX_VIDEO_HEIGHT}p."
+            )
         )
 
-    # Locate generated output file
-    downloaded_files = [f for f in job_dir.glob("*.mp4")]
-    if not downloaded_files:
-        # Fallback search for any media file
-        downloaded_files = [f for f in job_dir.iterdir() if f.is_file()]
-
-    if not downloaded_files:
-        shutil.rmtree(job_dir, ignore_errors=True)
+    # Fail-fast check for FFmpeg before downloading
+    ffmpeg_bin = get_ffmpeg_path()
+    if not ffmpeg_bin:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Результирующий видеофайл не был создан."
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "FFmpeg не обнаружен на сервере. Для объединения раздельных видео- и аудиопотоков "
+                "в формат MP4 требуется установленный FFmpeg."
+            )
         )
 
-    target_file = downloaded_files[0]
-    file_size_mb = target_file.stat().st_size / (1024 * 1024)
-    if file_size_mb > settings.MAX_FILE_SIZE_MB:
-        shutil.rmtree(job_dir, ignore_errors=True)
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"Размер скачанного файла ({file_size_mb:.1f} МБ) превышает лимит сервера ({settings.MAX_FILE_SIZE_MB} МБ)."
-        )
+    with DownloadSlot():
+        unique_job_id = f"video_{uuid.uuid4().hex[:10]}"
+        job_dir = settings.STORAGE_DIR / unique_job_id
+        job_dir.mkdir(parents=True, exist_ok=True)
 
-    download_filename = f"{title}_{quality}.mp4"
-    return target_file, download_filename, "video/mp4"
+        fmt = _build_format_selector(quality, settings.MAX_VIDEO_HEIGHT)
+        out_template = str(job_dir / "%(title)s_%(resolution)s.%(ext)s")
+
+        ydl_opts = get_ydl_base_opts({
+            "format": fmt,
+            "outtmpl": out_template,
+            "merge_output_format": "mp4",
+        })
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                title = sanitize_filename(info.get("title", "video"))
+        except Exception as e:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            sanitized_err = sanitize_error_message(e)
+            logger.error(f"Error downloading video {url} [{quality}]: {sanitized_err}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Не удалось скачать видео: {sanitized_err}"
+            )
+
+        # Locate generated output file
+        downloaded_files = [f for f in job_dir.glob("*.mp4")]
+        if not downloaded_files:
+            # Fallback search for any media file
+            downloaded_files = [f for f in job_dir.iterdir() if f.is_file()]
+
+        if not downloaded_files:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Результирующий видеофайл не был создан."
+            )
+
+        target_file = downloaded_files[0]
+        file_size_mb = target_file.stat().st_size / (1024 * 1024)
+        if file_size_mb > settings.MAX_FILE_SIZE_MB:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"Размер скачанного файла ({file_size_mb:.1f} МБ) превышает лимит сервера ({settings.MAX_FILE_SIZE_MB} МБ)."
+            )
+
+        download_filename = f"{title}_{quality}.mp4"
+        return target_file, download_filename, "video/mp4"
 
 
 def download_audio_file(url: str, audio_format: str = "mp3") -> Tuple[Path, str, str]:
@@ -416,69 +591,82 @@ def download_audio_file(url: str, audio_format: str = "mp3") -> Tuple[Path, str,
     Downloads audio using yt-dlp, extracting to MP3 or M4A.
     Returns: (local_file_path, client_download_filename, mime_type)
     """
-    unique_job_id = f"audio_{uuid.uuid4().hex[:10]}"
-    job_dir = settings.STORAGE_DIR / unique_job_id
-    job_dir.mkdir(parents=True, exist_ok=True)
-
-    out_template = str(job_dir / "%(title)s.%(ext)s")
-
     if audio_format.lower() == "mp3":
-        ydl_opts = get_ydl_base_opts({
-            "format": "bestaudio/best",
-            "outtmpl": out_template,
-            "postprocessors": [{
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "320",
-            }],
-        })
-        expected_ext = ".mp3"
-        mime_type = "audio/mpeg"
-    else:  # m4a
-        ydl_opts = get_ydl_base_opts({
-            "format": "bestaudio[ext=m4a]/bestaudio/best",
-            "outtmpl": out_template,
-        })
-        expected_ext = ".m4a"
-        mime_type = "audio/mp4"
+        ffmpeg_bin = get_ffmpeg_path()
+        if not ffmpeg_bin:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "FFmpeg не обнаружен на сервере. Для конвертации аудио в формат MP3 (320 kbps) "
+                    "требуется FFmpeg. Вы можете скачать аудио в формате M4A без перекодирования."
+                )
+            )
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            title = sanitize_filename(info.get("title", "audio"))
-    except Exception as e:
-        shutil.rmtree(job_dir, ignore_errors=True)
-        logger.error(f"Error downloading audio {url} [{audio_format}]: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Не удалось скачать аудио: {str(e)}"
-        )
+    with DownloadSlot():
+        unique_job_id = f"audio_{uuid.uuid4().hex[:10]}"
+        job_dir = settings.STORAGE_DIR / unique_job_id
+        job_dir.mkdir(parents=True, exist_ok=True)
 
-    # Locate generated output file
-    downloaded_files = [f for f in job_dir.glob(f"*{expected_ext}")]
-    if not downloaded_files:
-        downloaded_files = [f for f in job_dir.iterdir() if f.is_file()]
+        out_template = str(job_dir / "%(title)s.%(ext)s")
 
-    if not downloaded_files:
-        shutil.rmtree(job_dir, ignore_errors=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Результирующий аудиофайл не был создан."
-        )
+        if audio_format.lower() == "mp3":
+            ydl_opts = get_ydl_base_opts({
+                "format": "bestaudio/best",
+                "outtmpl": out_template,
+                "postprocessors": [{
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": "320",
+                }],
+            })
+            expected_ext = ".mp3"
+            mime_type = "audio/mpeg"
+        else:  # m4a
+            ydl_opts = get_ydl_base_opts({
+                "format": "bestaudio[ext=m4a]/bestaudio/best",
+                "outtmpl": out_template,
+            })
+            expected_ext = ".m4a"
+            mime_type = "audio/mp4"
 
-    target_file = downloaded_files[0]
-    download_filename = f"{title}.{audio_format.lower()}"
-    return target_file, download_filename, mime_type
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                title = sanitize_filename(info.get("title", "audio"))
+        except Exception as e:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            sanitized_err = sanitize_error_message(e)
+            logger.error(f"Error downloading audio {url} [{audio_format}]: {sanitized_err}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Не удалось скачать аудио: {sanitized_err}"
+            )
+
+        # Locate generated output file
+        downloaded_files = [f for f in job_dir.glob(f"*{expected_ext}")]
+        if not downloaded_files:
+            downloaded_files = [f for f in job_dir.iterdir() if f.is_file()]
+
+        if not downloaded_files:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Результирующий аудиофайл не был создан."
+            )
+
+        target_file = downloaded_files[0]
+        download_filename = f"{title}.{audio_format.lower()}"
+        return target_file, download_filename, mime_type
 
 
 def srt_to_clean_txt(srt_content: str) -> str:
     """
     Cleans an SRT string into pure legible text:
     removes numeric indexes, timestamps, HTML tags, and duplicate consecutive lines.
-    (Derived directly from analyze.py algorithm)
+    Preserves natural repetition of lyrics and dialogue while removing rolling caption artifacts.
     """
     lines = []
-    seen = set()
+    prev_line = ""
     for raw_line in srt_content.splitlines():
         line = raw_line.strip()
         if not line:
@@ -491,9 +679,11 @@ def srt_to_clean_txt(srt_content: str) -> str:
             continue
         # Remove HTML-like markup (font, b, i, color, etc.)
         clean = re.sub(r"<[^>]+>", "", line).strip()
-        if clean and clean not in seen:
-            seen.add(clean)
+        # Deduplicate ONLY consecutive identical lines (YouTube auto-subtitles rolling artifact),
+        # preserving recurring phrases, songs, and dialogue throughout the video
+        if clean and clean != prev_line:
             lines.append(clean)
+            prev_line = clean
 
     return "\n".join(lines)
 
@@ -504,80 +694,82 @@ def download_subtitles_file(url: str, lang: str = "ru", format_type: str = "txt"
     Outputs clean .txt (without timestamps/duplicates) or standard .srt.
     Returns: (local_file_path, client_download_filename, mime_type)
     """
-    unique_job_id = f"subs_{uuid.uuid4().hex[:10]}"
-    job_dir = settings.STORAGE_DIR / unique_job_id
-    job_dir.mkdir(parents=True, exist_ok=True)
+    with DownloadSlot():
+        unique_job_id = f"subs_{uuid.uuid4().hex[:10]}"
+        job_dir = settings.STORAGE_DIR / unique_job_id
+        job_dir.mkdir(parents=True, exist_ok=True)
 
-    out_template = str(job_dir / "subtitles")
+        out_template = str(job_dir / "subtitles")
 
-    # First attempt: manual subtitles
-    ydl_opts_manual = get_ydl_base_opts({
-        "skip_download": True,
-        "writesubtitles": True,
-        "subtitleslangs": [lang, "ru", "en"],
-        "subtitlesformat": "srt",
-        "outtmpl": out_template,
-    })
-
-    found_srt = None
-    title = "subtitles"
-
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts_manual) as ydl:
-            info = ydl.extract_info(url, download=True)
-            title = sanitize_filename(info.get("title", "transcript"))
-    except Exception as e:
-        logger.warning(f"Error checking manual subs: {e}")
-
-    # Check for manual subs file
-    srt_candidates = list(job_dir.glob("*.srt")) + list(job_dir.glob("*.vtt"))
-    if srt_candidates:
-        found_srt = srt_candidates[0]
-
-    # Second attempt: auto-generated captions if manual not found
-    if not found_srt:
-        ydl_opts_auto = get_ydl_base_opts({
+        # First attempt: manual subtitles
+        ydl_opts_manual = get_ydl_base_opts({
             "skip_download": True,
-            "writeautomaticsub": True,
+            "writesubtitles": True,
             "subtitleslangs": [lang, "ru", "en"],
             "subtitlesformat": "srt",
             "outtmpl": out_template,
         })
+
+        found_srt = None
+        title = "subtitles"
+
         try:
-            with yt_dlp.YoutubeDL(ydl_opts_auto) as ydl:
+            with yt_dlp.YoutubeDL(ydl_opts_manual) as ydl:
                 info = ydl.extract_info(url, download=True)
                 title = sanitize_filename(info.get("title", "transcript"))
         except Exception as e:
-            logger.warning(f"Error checking auto subs: {e}")
+            logger.warning(f"Error checking manual subs: {sanitize_error_message(e)}")
 
+        # Check for manual subs file
         srt_candidates = list(job_dir.glob("*.srt")) + list(job_dir.glob("*.vtt"))
         if srt_candidates:
             found_srt = srt_candidates[0]
 
-    if not found_srt:
-        shutil.rmtree(job_dir, ignore_errors=True)
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Субтитры для языка '{lang}' не найдены у данного видео."
-        )
+        # Second attempt: auto-generated captions if manual not found
+        if not found_srt:
+            ydl_opts_auto = get_ydl_base_opts({
+                "skip_download": True,
+                "writeautomaticsub": True,
+                "subtitleslangs": [lang, "ru", "en"],
+                "subtitlesformat": "srt",
+                "outtmpl": out_template,
+            })
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts_auto) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    title = sanitize_filename(info.get("title", "transcript"))
+            except Exception as e:
+                logger.warning(f"Error checking auto subs: {sanitize_error_message(e)}")
 
-    # Read raw subtitle content
-    try:
-        content = found_srt.read_text(encoding="utf-8", errors="replace")
-    except Exception as e:
-        shutil.rmtree(job_dir, ignore_errors=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ошибка чтения субтитров: {e}"
-        )
+            srt_candidates = list(job_dir.glob("*.srt")) + list(job_dir.glob("*.vtt"))
+            if srt_candidates:
+                found_srt = srt_candidates[0]
 
-    if format_type.lower() == "txt":
-        clean_text = srt_to_clean_txt(content)
-        txt_path = job_dir / f"{title}_{lang}.txt"
-        txt_path.write_text(clean_text, encoding="utf-8")
-        return txt_path, f"{title}_{lang}.txt", "text/plain; charset=utf-8"
-    else:  # srt
-        out_srt = job_dir / f"{title}_{lang}.srt"
-        if found_srt != out_srt:
-            found_srt.rename(out_srt)
-        return out_srt, f"{title}_{lang}.srt", "text/plain; charset=utf-8"
+        if not found_srt:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Субтитры для языка '{lang}' не найдены у данного видео."
+            )
+
+        # Read raw subtitle content
+        try:
+            content = found_srt.read_text(encoding="utf-8", errors="replace")
+        except Exception as e:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            sanitized_err = sanitize_error_message(e)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Ошибка чтения субтитров: {sanitized_err}"
+            )
+
+        if format_type.lower() == "txt":
+            clean_text = srt_to_clean_txt(content)
+            txt_path = job_dir / f"{title}_{lang}.txt"
+            txt_path.write_text(clean_text, encoding="utf-8")
+            return txt_path, f"{title}_{lang}.txt", "text/plain; charset=utf-8"
+        else:  # srt
+            out_srt = job_dir / f"{title}_{lang}.srt"
+            if found_srt != out_srt:
+                found_srt.rename(out_srt)
+            return out_srt, f"{title}_{lang}.srt", "text/plain; charset=utf-8"

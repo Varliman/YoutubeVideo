@@ -40,6 +40,7 @@ class Settings:
     # Proxy settings (crucial for bypassing YouTube datacenter/region blocks)
     _raw_proxy: str = os.getenv("PROXY_URL", os.getenv("PROXY_STRING", "")).strip()
     PROXY_URL: str = parse_proxy(_raw_proxy)
+    FORCE_IPV4: bool = os.getenv("FORCE_IPV4", "True").lower() in ("true", "1", "yes")
 
     # Authentication & Cookies (fixes private, age-restricted, and bot-verification issues)
     COOKIES_FILE: str = os.getenv("COOKIES_FILE", "").strip()
@@ -50,7 +51,9 @@ class Settings:
     BASE_DIR: Path = Path(__file__).resolve().parent.parent.parent
     STORAGE_DIR: Path = Path(os.getenv("STORAGE_DIR", str(BASE_DIR / "downloads"))).resolve()
 
-    # Limits & Constraints
+    # Limits & Constraints (optimized for Render Free 512MB RAM)
+    MAX_CONCURRENT_DOWNLOADS: int = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "1"))
+    MAX_VIDEO_HEIGHT: int = int(os.getenv("MAX_VIDEO_HEIGHT", "720"))
     MAX_DURATION_SECONDS: int = int(os.getenv("MAX_DURATION_SECONDS", "14400"))  # 4 hours
     MAX_FILE_SIZE_MB: int = int(os.getenv("MAX_FILE_SIZE_MB", "1024"))  # 1 GB
     RATE_LIMIT_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "30"))

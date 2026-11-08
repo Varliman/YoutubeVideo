@@ -67,8 +67,9 @@ async function checkHealth() {
     serverStatusDot.className = "status-indicator online";
     let statusMsg = "Сервер онлайн";
     if (data.ffmpeg_available) statusMsg += " (FFmpeg)";
-    if (data.cookies_configured) statusMsg += " • Авторизован (Cookies)";
+    if (data.cookies_configured) statusMsg += " • Cookies";
     if (data.proxy_configured) statusMsg += " • Прокси";
+    if (data.rss_mb > 0) statusMsg += ` • RAM: ${data.rss_mb} МБ`;
     serverStatusText.textContent = statusMsg;
   } catch (err) {
     serverStatusDot.className = "status-indicator offline";
@@ -417,28 +418,59 @@ function renderRawFormatsTable(formats) {
 /* -------------------------------------------------------------
  * 5. Download Streaming Handler
  * ------------------------------------------------------------- */
-function triggerDownload(btn, url) {
+async function triggerDownload(btn, url) {
   const originalHtml = btn.innerHTML;
   btn.disabled = true;
   btn.innerHTML = `
     <div class="spinner" style="width:14px;height:14px;"></div>
-    <span>Подготовка...</span>
+    <span>Проверка...</span>
   `;
 
-  // Create native download anchor
-  const link = document.createElement("a");
-  link.href = url;
-  link.setAttribute("download", "");
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
+  try {
+    // 1. Parse target download URL parameters for pre-flight check
+    const urlObj = new URL(url, window.location.origin);
+    const ytUrl = urlObj.searchParams.get("url");
+    let kind = "video";
+    if (url.includes("/api/download/audio")) kind = "audio";
+    else if (url.includes("/api/download/transcript")) kind = "transcript";
 
-  showToast("Запрос отправлен. Загрузка файла начнётся автоматически!");
+    const checkParams = new URLSearchParams({ url: ytUrl, kind });
+    const quality = urlObj.searchParams.get("quality");
+    const format = urlObj.searchParams.get("format");
+    const lang = urlObj.searchParams.get("lang");
+    if (quality) checkParams.set("quality", quality);
+    if (format) checkParams.set("format", format);
+    if (lang) checkParams.set("lang", lang);
 
-  setTimeout(() => {
+    // 2. Perform lightweight pre-check on backend (concurrency, limits, ffmpeg)
+    const checkRes = await fetch("/api/check-download?" + checkParams.toString());
+    if (!checkRes.ok) {
+      let errorDetail = "Ошибка при проверке возможности скачивания";
+      try {
+        const errJson = await checkRes.json();
+        errorDetail = errJson.detail || errorDetail;
+      } catch (e) {
+        errorDetail = `Ошибка сервера (${checkRes.status})`;
+      }
+      showAlert("Невозможно начать скачивание", errorDetail);
+      return;
+    }
+
+    // 3. Pre-check succeeded: trigger native direct streaming download via <a> tag.
+    // Avoids buffering multi-hundred MB into browser V8 JS heap (prevents browser tab OOM crashes).
+    showToast("Сервер готовит поток. Файл сохраняется напрямую браузером...");
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  } catch (err) {
+    showAlert("Ошибка сети", `Не удалось выполнить проверку или начать загрузку: ${err.message}`);
+  } finally {
     btn.disabled = false;
     btn.innerHTML = originalHtml;
-  }, 4000);
+  }
 }
 
 /* -------------------------------------------------------------

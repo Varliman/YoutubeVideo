@@ -55,6 +55,19 @@ def validate_youtube_url(url: str) -> str:
             detail="Разрешены только ссылки на YouTube (youtube.com или youtu.be)."
         )
 
+    # Check for playlists or channels without specific video ID (strict prefix matching)
+    path = parsed.path.lower()
+    if path == "/playlist" or path.startswith("/playlist/") or (parsed.query and "list=" in parsed.query and "v=" not in parsed.query):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Скачивание плейлистов целиком не поддерживается. Пожалуйста, укажите ссылку на конкретное видео."
+        )
+    if path.startswith("/@") or path.startswith("/channel/") or path.startswith("/c/") or path.startswith("/user/"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ссылки на каналы не поддерживаются. Пожалуйста, укажите ссылку на конкретное видео."
+        )
+
     # Validate pattern and extract ID
     match = YOUTUBE_URL_REGEX.match(url)
     if not match:

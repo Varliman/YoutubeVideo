@@ -9,6 +9,9 @@ from pathlib import Path
 
 logger = logging.getLogger("cleanup")
 
+# Protected system files that must NEVER be deleted by cleanup (module-level constant)
+PROTECTED_FILENAMES = {"cookies.txt", ".gitkeep", "README.md"}
+
 
 def delete_file_safely(file_or_dir_path: str | Path):
     """Safely removes a file or directory without raising exceptions."""
@@ -32,6 +35,9 @@ def cleanup_old_files(storage_dir: Path, max_age_seconds: int):
     now = time.time()
     try:
         for entry in storage_dir.iterdir():
+            if entry.name in PROTECTED_FILENAMES:
+                continue
+
             try:
                 stat = entry.stat()
                 age = now - stat.st_mtime

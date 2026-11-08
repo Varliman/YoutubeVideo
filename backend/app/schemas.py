@@ -70,10 +70,22 @@ class AnalyzeResponse(BaseModel):
     all_formats: list[FormatItem]
 
 
+class CheckDownloadResponse(BaseModel):
+    """Pre-check validation response prior to launching heavy downloads."""
+    ok: bool
+    title: Optional[str] = None
+    message: Optional[str] = None
+
+
 class HealthResponse(BaseModel):
-    """Health check response."""
+    """Health check response with Render Free 512MB RAM diagnostics."""
     status: str
     ffmpeg_available: bool
     proxy_configured: bool
     cookies_configured: bool
     storage_dir: str
+    concurrency_limit: int
+    max_video_height: int
+    current_active_downloads: int
+    rss_mb: float
+    oom_risk: str  # "low" | "medium" | "high"

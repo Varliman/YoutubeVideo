@@ -15,5 +15,9 @@ services:
         value: 7200
       - key: MAX_FILE_SIZE_MB
         value: 500
+      - key: MAX_CONCURRENT_DOWNLOADS
+        value: 1
+      - key: MAX_VIDEO_HEIGHT
+        value: 720
       - key: RATE_LIMIT_PER_MINUTE
         value: 20
