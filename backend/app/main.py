@@ -21,9 +21,11 @@ from .schemas import (
 )
 from .services.cleanup import start_periodic_cleanup_thread, delete_file_safely
 from .services.youtube import (
+    HTTP_422_STATUS,
     get_ffmpeg_path,
     get_nodejs_available,
     get_active_downloads_count,
+    start_pot_provider_daemon,
     check_download_feasibility,
     extract_video_metadata,
     download_video_file,
@@ -40,7 +42,6 @@ def get_process_rss_mb() -> float:
     cgroup memory to account for both Python and child FFmpeg processes.
     Falls back to resource.getrusage or psutil on Windows/macOS.
     """
-    # 1. cgroup v2 and v1 (Linux container memory covering Python + FFmpeg children)
     for path in (
         "/sys/fs/cgroup/memory.current",
         "/sys/fs/cgroup/memory/memory.usage_in_bytes",
@@ -53,7 +54,6 @@ def get_process_rss_mb() -> float:
         except (FileNotFoundError, ValueError, PermissionError, Exception):
             continue
 
-    # 2. Linux /proc/self/status fallback
     try:
         proc_status = Path("/proc/self/status")
         if proc_status.exists():
@@ -64,7 +64,6 @@ def get_process_rss_mb() -> float:
     except Exception:
         pass
 
-    # 3. resource.getrusage (macOS / POSIX fallback)
     try:
         import resource
         import sys
@@ -75,7 +74,6 @@ def get_process_rss_mb() -> float:
     except Exception:
         pass
 
-    # 4. psutil fallback (Windows dev environment)
     try:
         import psutil
         return round(psutil.Process().memory_info().rss / (1024 * 1024), 1)
@@ -87,10 +85,13 @@ def get_process_rss_mb() -> float:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan context: starts background cleanup tasks."""
+    """Application lifespan context: starts PO-Token server and background cleanup tasks."""
     os.makedirs(settings.STORAGE_DIR, exist_ok=True)
 
-    # Start periodic storage cleaner (runs every 15 mins, purges files older than 30 mins)
+    # Start local Rust bgutil-pot PO Token provider daemon if available
+    start_pot_provider_daemon()
+
+    # Start periodic storage cleaner
     start_periodic_cleanup_thread(
         settings.STORAGE_DIR,
         settings.CLEANUP_INTERVAL_MINUTES,
@@ -102,11 +103,10 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="YouTube Video Analyzer & Downloader API",
     description="Full-stack YouTube analyzer, metadata extractor, and media downloader.",
-    version="1.2.0",
+    version="1.2.1",
     lifespan=lifespan
 )
 
-# CORS setup (disable credentials when wildcard '*' is used to comply with Fetch CORS spec)
 _allow_creds = "*" not in settings.CORS_ORIGINS
 app.add_middleware(
     CORSMiddleware,
@@ -132,8 +132,6 @@ def make_content_disposition(filename: str) -> str:
 async def health_check():
     """
     Async health check endpoint with Render Free 512MB RAM diagnostics.
-    Runs directly on the event loop so Render health probes never time out
-    even when worker threads are busy with yt-dlp.
     """
     ffmpeg_bin = get_ffmpeg_path()
     nodejs_ok = get_nodejs_available()
@@ -174,7 +172,6 @@ def check_download(
 ):
     """
     Pre-flight check before initiating heavy file downloads.
-    Validates URL, rate limit, server concurrency slot, and actual video accessibility.
     """
     rate_limiter.check(request)
     normalized_url = validate_youtube_url(url)
@@ -190,7 +187,7 @@ def check_download(
         if "Сервер в данный момент" in msg or "Сервер занят" in msg or "429" in msg or "FFmpeg не установлен" in msg:
             status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         elif "Видео недоступно в качестве" in msg:
-            status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+            status_code = HTTP_422_STATUS
         elif "требует авторизации" in msg:
             status_code = status.HTTP_403_FORBIDDEN
         elif "не найдены" in msg or "удалено" in msg:
@@ -214,9 +211,7 @@ def prepare_download(
     """
     Two-phase download preparation endpoint:
     Downloads/merges the requested media or subtitle file on the server FIRST via XHR/fetch,
-    so any yt-dlp/YouTube error is returned as structured JSON to the frontend UI (preventing
-    Firefox/Chrome from navigating to a raw 400/404 browser error page).
-    Returns a one-time stream token for native browser download via GET /api/stream/{token}.
+    so any yt-dlp/YouTube error is returned as structured JSON to the frontend UI.
     """
     rate_limiter.check(request)
     normalized_url = validate_youtube_url(url)
@@ -278,14 +273,11 @@ def download_video(
 ):
     """
     Downloads video in specified quality with audio merged and streams it to the client.
-    Cleans up server storage immediately after streaming finishes.
     """
     rate_limiter.check(request)
     normalized_url = validate_youtube_url(url)
 
     target_file, filename, mime_type = download_video_file(normalized_url, quality)
-
-    # Schedule deletion of file and job directory after response finishes
     background_tasks.add_task(delete_file_safely, target_file.parent)
 
     return FileResponse(
@@ -304,14 +296,11 @@ def download_audio(
 ):
     """
     Downloads audio in MP3 or M4A format and streams it to the client.
-    Cleans up server storage immediately after streaming finishes.
     """
     rate_limiter.check(request)
     normalized_url = validate_youtube_url(url)
 
     target_file, filename, mime_type = download_audio_file(normalized_url, format)
-
-    # Schedule deletion of file and job directory after response finishes
     background_tasks.add_task(delete_file_safely, target_file.parent)
 
     return FileResponse(
@@ -331,14 +320,11 @@ def download_transcript(
 ):
     """
     Downloads video transcript or subtitles as clean .txt or standard .srt.
-    Cleans up server storage immediately after streaming finishes.
     """
     rate_limiter.check(request)
     normalized_url = validate_youtube_url(url)
 
     target_file, filename, mime_type = download_subtitles_file(normalized_url, lang, format)
-
-    # Schedule deletion of file and job directory after response finishes
     background_tasks.add_task(delete_file_safely, target_file.parent)
 
     return FileResponse(

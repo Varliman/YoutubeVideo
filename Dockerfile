@@ -13,13 +13,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Install system dependencies:
 # - ffmpeg: media merging and audio conversion
 # - nodejs: REQUIRED by yt-dlp 2026+ (yt-dlp-ejs) to solve YouTube n-sig / signatureCipher challenges
-# - curl & ca-certificates: container healthchecks and HTTPS
+# - curl & ca-certificates: container healthchecks and downloading bgutil-pot binary
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     nodejs \
     curl \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+# Install lightweight Rust PO-Token provider binary (bgutil-pot) for bypassing YouTube datacenter blocks
+RUN curl -fsSL https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/latest/download/bgutil-pot-linux-x86_64 \
+    -o /usr/local/bin/bgutil-pot && chmod +x /usr/local/bin/bgutil-pot || true
 
 # Create non-root application user for container security
 RUN groupadd -r appgroup && useradd -r -g appgroup -d /app -s /sbin/nologin appuser

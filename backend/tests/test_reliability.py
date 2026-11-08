@@ -3,6 +3,8 @@ Automated reliability and regression test suite for youtube-analyzer-web.
 Covers Render Free 512MB RAM protections and core functionality:
 - Concurrency serialization (MAX_CONCURRENT_DOWNLOADS=1, 503 rejection)
 - Height capping and elimination of unconstrained /best and /worst, with H.264 priority
+- Explicit Node.js JS runtime configuration in get_ydl_base_opts (required by yt-dlp 2026+)
+- Removal of broken 'tv' client and presence of formats=['missing_pot'] fallback
 - Error message credential sanitization (no sensitive data leaks)
 - Pre-flight check endpoint (/api/check-download) with video accessibility, 1080p cap, live stream & duration guard
 - Two-phase download (/api/prepare-download + /api/stream/{token}) preventing browser 400/404 error screens
@@ -45,8 +47,8 @@ from backend.app.services.youtube import (
     vtt_to_srt,
     _prepare_writable_cookiefile,
     _is_storyboard_or_non_media,
-    register_prepared_file,
-    pop_prepared_file,
+    get_ydl_base_opts,
+    _CLIENT_PROFILES,
 )
 
 
@@ -105,7 +107,24 @@ class TestReliabilityAndSafety(unittest.TestCase):
         self.assertIn("height<=720", selector)
         self.assertNotIn("height<=1080", selector)
 
-    # 3. Concurrency serialization and 503 rejection
+    # 3. JS Runtime & Client Profile tests for yt-dlp 2026+
+    def test_js_runtimes_node_explicitly_enabled(self):
+        """Ensures get_ydl_base_opts explicitly sets js_runtimes['node'] so yt-dlp 2026+ uses Node.js."""
+        opts = get_ydl_base_opts()
+        self.assertIn("js_runtimes", opts)
+        self.assertIn("node", opts["js_runtimes"])
+
+    def test_client_profiles_no_tv_and_has_missing_pot(self):
+        """Ensures 'tv' client (which causes 'The page needs to be reloaded') is excluded and missing_pot is present."""
+        has_missing_pot = False
+        for prof in _CLIENT_PROFILES:
+            clients = prof.get("player_client", [])
+            self.assertNotIn("tv", clients)
+            if "missing_pot" in prof.get("formats", []):
+                has_missing_pot = True
+        self.assertTrue(has_missing_pot)
+
+    # 4. Concurrency serialization and 503 rejection
     def test_download_slot_concurrency_serialization(self):
         """Ensures only 1 download can run; second caller receives 503."""
         self.assertEqual(get_active_downloads_count(), 0)
@@ -118,7 +137,7 @@ class TestReliabilityAndSafety(unittest.TestCase):
             self.assertIn("выполняет другую загрузку", ctx.exception.detail)
         self.assertEqual(get_active_downloads_count(), 0)
 
-    # 4. URL Validation tests
+    # 5. URL Validation tests
     def test_url_validation_video_in_playlist(self):
         """Valid video with &list= parameter must be accepted and normalized."""
         url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PL12345"
@@ -150,7 +169,7 @@ class TestReliabilityAndSafety(unittest.TestCase):
             self.assertEqual(ctx.exception.status_code, 400)
             self.assertIn("каналы не поддерживаются", ctx.exception.detail)
 
-    # 5. Pre-check feasibility with format verification & storyboard filtering
+    # 6. Pre-check feasibility with format verification & storyboard filtering
     @patch("backend.app.services.youtube.get_cached_or_extract_info")
     @patch("backend.app.services.youtube.get_ffmpeg_path")
     def test_check_download_feasibility_ok(self, mock_ffmpeg, mock_info):
@@ -176,7 +195,7 @@ class TestReliabilityAndSafety(unittest.TestCase):
         mock_ffmpeg.return_value = "ffmpeg"
         mock_info.return_value = {
             "title": "4K Ultra HD Nature",
-            "formats": [{"height": 2160}],  # Only 4K available
+            "formats": [{"height": 2160}],
         }
         ok, msg, title = check_download_feasibility(
             url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
@@ -204,7 +223,7 @@ class TestReliabilityAndSafety(unittest.TestCase):
             self.assertFalse(ok)
             self.assertIn("1080p отключено", msg)
 
-    # 6. Cleanup protected filenames
+    # 7. Cleanup protected filenames
     def test_cleanup_protected_files(self):
         """Ensures cookies.txt, runtime_cookies.txt, .gitkeep, README.md are strictly protected."""
         self.assertIn("cookies.txt", PROTECTED_FILENAMES)
@@ -212,7 +231,7 @@ class TestReliabilityAndSafety(unittest.TestCase):
         self.assertIn(".gitkeep", PROTECTED_FILENAMES)
         self.assertIn("README.md", PROTECTED_FILENAMES)
 
-    # 7. Health endpoint memory diagnostics
+    # 8. Health endpoint memory diagnostics
     def test_health_endpoint(self):
         """Tests /api/health reports RSS memory, nodejs_available, and concurrency constraints."""
         res = self.client.get("/api/health")
@@ -226,7 +245,7 @@ class TestReliabilityAndSafety(unittest.TestCase):
         self.assertIn("oom_risk", data)
         self.assertIn(data["oom_risk"], ("low", "medium", "high"))
 
-    # 8. Pre-check API endpoint integration
+    # 9. Pre-check API endpoint integration
     @patch("backend.app.main.check_download_feasibility")
     def test_check_download_endpoint_success(self, mock_feasibility):
         """Tests GET /api/check-download returns 200 with title."""
@@ -239,7 +258,7 @@ class TestReliabilityAndSafety(unittest.TestCase):
         self.assertTrue(data["ok"])
         self.assertEqual(data["title"], "test_video")
 
-    # 9. Two-phase prepare & stream endpoint test
+    # 10. Two-phase prepare & stream endpoint test
     @patch("backend.app.main.download_subtitles_file")
     def test_two_phase_prepare_and_stream(self, mock_dl_subs):
         """Tests /api/prepare-download followed by /api/stream/{token}."""
@@ -262,7 +281,7 @@ class TestReliabilityAndSafety(unittest.TestCase):
             self.assertEqual(stream_res.status_code, 200)
             self.assertEqual(stream_res.text, "Привет мир")
 
-    # 10. Cyrillic Content-Disposition Latin-1 encoding safety
+    # 11. Cyrillic Content-Disposition Latin-1 encoding safety
     def test_content_disposition_cyrillic_latin1_safe(self):
         """Ensures Cyrillic filenames do not crash Starlette latin-1 header encoding."""
         header = make_content_disposition("Разбор_полетов_720p.mp4")
@@ -270,7 +289,7 @@ class TestReliabilityAndSafety(unittest.TestCase):
         self.assertIsInstance(encoded, bytes)
         self.assertIn("filename*=UTF-8''", header)
 
-    # 11. WebVTT, JSON3, and XML cleaning and SRT conversion
+    # 12. WebVTT, JSON3, and XML cleaning and SRT conversion
     def test_vtt_json3_xml_cleaning(self):
         """Ensures WEBVTT, JSON3, and SRV3 XML subtitles convert cleanly to TXT and SRT."""
         sample_vtt = (
@@ -300,7 +319,7 @@ class TestReliabilityAndSafety(unittest.TestCase):
         self.assertEqual(srt_to_clean_txt(sample_xml), "Привет из XML")
         self.assertIn("00:00:01,500 --> 00:00:03,500", vtt_to_srt(sample_xml))
 
-    # 12. Writable runtime cookies from COOKIES_TEXT
+    # 13. Writable runtime cookies from COOKIES_TEXT
     def test_writable_cookies_from_text(self):
         """Ensures COOKIES_TEXT is normalized and written to a writable file in STORAGE_DIR."""
         with tempfile.TemporaryDirectory() as tmpdir:

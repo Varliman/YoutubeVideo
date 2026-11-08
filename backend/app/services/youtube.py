@@ -9,8 +9,8 @@ import uuid
 import shutil
 import logging
 import threading
+import subprocess
 import urllib.parse
-import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Optional, Tuple
@@ -27,15 +27,14 @@ from ..schemas import (
 
 logger = logging.getLogger("youtube-service")
 
+HTTP_422_STATUS = getattr(status, "HTTP_422_UNPROCESSABLE_CONTENT", 422)
+
 
 def sanitize_error_message(error: Exception | str) -> str:
     """Strips passwords and sensitive credentials from error messages and proxy URLs."""
     msg = str(error)
-    # Strip ANSI escape sequences if any
     msg = re.sub(r'\x1b\[[0-9;]*m', '', msg)
-    # Strip user:password credentials from URLs (e.g. http://login:pass@host:port)
     msg = re.sub(r'://([^:/\s]+):([^@/\s]+)@', r'://\1:***@', msg)
-    # Optionally mask bare proxy password if it is at least 6 characters and bounded
     if getattr(settings, "PROXY_URL", None):
         match = re.search(r'://([^:/\s]+):([^@/\s]+)@', settings.PROXY_URL)
         if match:
@@ -50,6 +49,7 @@ _subtitles_semaphore = threading.Semaphore(max(3, settings.MAX_CONCURRENT_DOWNLO
 _active_downloads_count = 0
 _active_downloads_lock = threading.Lock()
 _cookies_lock = threading.Lock()
+_pot_server_proc: Optional[subprocess.Popen] = None
 
 # 180-second in-memory metadata cache to prevent redundant extract_info calls
 _INFO_CACHE: dict[str, Tuple[float, dict]] = {}
@@ -61,6 +61,28 @@ _MAX_CACHE_ENTRIES = 64
 _PREPARED_FILES: dict[str, Tuple[Path, str, str, float]] = {}
 _PREPARED_FILES_LOCK = threading.Lock()
 _PREPARED_TTL_SECONDS = 600.0  # 10 minutes
+
+
+def start_pot_provider_daemon():
+    """
+    Starts the lightweight Rust bgutil-pot HTTP server on 127.0.0.1:4416 if installed.
+    Provides automatic BotGuard PO Tokens to yt-dlp to bypass YouTube datacenter IP blocks.
+    """
+    global _pot_server_proc
+    pot_bin = shutil.which("bgutil-pot")
+    if not pot_bin:
+        return
+    if _pot_server_proc and _pot_server_proc.poll() is None:
+        return
+    try:
+        _pot_server_proc = subprocess.Popen(
+            [pot_bin, "server", "--host", "127.0.0.1", "--port", "4416"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        logger.info("Started bgutil-pot PO Token server on 127.0.0.1:4416")
+    except Exception as e:
+        logger.warning(f"Could not start bgutil-pot server: {e}")
 
 
 def register_prepared_file(file_path: Path, filename: str, mime_type: str) -> str:
@@ -111,27 +133,35 @@ def _has_playable_formats(info: Optional[dict]) -> bool:
     return any(not _is_storyboard_or_non_media(f) for f in formats)
 
 
-# Client fallback profiles to maximize YouTube extraction success across datacenter IPs
-_CLIENT_PROFILES = [
-    # Profile 0: yt-dlp default smart client selection (uses android_vr, web_safari, tv, web with nodejs/ejs)
-    None,
-    # Profile 1: TV + Web Safari + Mobile Web (often bypasses standard web bot checks)
-    ["tv", "web_safari", "mweb", "web"],
-    # Profile 2: iOS + Android VR + MWeb fallback
-    ["ios", "android_vr", "mweb"],
+# Client fallback profiles for yt-dlp 2026+ (avoiding broken 'tv' client that causes 'The page needs to be reloaded')
+_CLIENT_PROFILES: list[dict] = [
+    # Profile 1: Default clients + web_embedded + mweb + android_vr with Node.js EJS solver
+    {
+        "player_client": ["default", "web_embedded", "mweb", "android_vr"],
+    },
+    # Profile 2: Enable formats=missing_pot so yt-dlp does NOT skip streams when PO Token is absent on datacenter IPs
+    {
+        "player_client": ["default", "ios", "mweb", "android_vr", "web_embedded"],
+        "formats": ["missing_pot"],
+    },
+    # Profile 3: Mobile/VR clients with missing_pot + duplicate formats unlocked
+    {
+        "player_client": ["android_vr", "mweb", "ios", "web_safari"],
+        "formats": ["missing_pot", "duplicate"],
+    },
 ]
 
 
 def _extract_with_client_fallbacks(url: str, base_extra_opts: dict, download: bool = False) -> dict:
     """
-    Executes yt-dlp extract_info with automatic fallback across client profiles
-    if YouTube rejects a specific client with format unavailability or bot check.
+    Executes yt-dlp extract_info with automatic fallback across client profiles.
+    If download=False (metadata/analyze mode) and all profiles fail to unlock playable streams,
+    falls back to ignore_no_formats_error=True so metadata and subtitles still work.
     """
     last_exc = None
-    for idx, client_list in enumerate(_CLIENT_PROFILES):
+    for idx, youtube_args in enumerate(_CLIENT_PROFILES):
         extra = dict(base_extra_opts)
-        if client_list is not None:
-            extra["extractor_args"] = {"youtube": {"player_client": client_list}}
+        extra["extractor_args"] = {"youtube": dict(youtube_args)}
         opts = get_ydl_base_opts(extra)
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -142,10 +172,29 @@ def _extract_with_client_fallbacks(url: str, base_extra_opts: dict, download: bo
             last_exc = e
             err_str = str(e)
             logger.warning(f"yt-dlp attempt {idx + 1} failed for {url}: {sanitize_error_message(e)}")
-            # If video is genuinely private or deleted (404), don't waste time retrying other clients
             if "Private video" in err_str or "Video unavailable" in err_str or "File is larger than max-filesize" in err_str:
                 raise e
             continue
+
+    # If we are only extracting metadata (e.g. /api/analyze or subtitles) and formats were blocked,
+    # extract with ignore_no_formats_error=True so video info & transcripts remain accessible!
+    if not download:
+        try:
+            fallback_extra = dict(base_extra_opts)
+            fallback_extra["ignore_no_formats_error"] = True
+            fallback_extra["extractor_args"] = {
+                "youtube": {
+                    "player_client": ["default", "web_embedded", "mweb", "ios"],
+                    "formats": ["missing_pot"],
+                }
+            }
+            opts = get_ydl_base_opts(fallback_extra)
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                if info:
+                    return info
+        except Exception as e:
+            last_exc = e
 
     if last_exc:
         raise last_exc
@@ -246,7 +295,6 @@ def check_download_feasibility(
     3. Checks format/quality availability (verifies playable video height <= requested quality).
     Returns: (is_ok: bool, message: str, title: Optional[str])
     """
-    # 1. Server constraints - cheap fail-fast checks
     if kind == "video" and quality == "1080p" and settings.MAX_VIDEO_HEIGHT and settings.MAX_VIDEO_HEIGHT < 1080:
         return (
             False,
@@ -266,7 +314,6 @@ def check_download_feasibility(
             None,
         )
 
-    # 2. Real video accessibility check - uses in-memory cache
     try:
         info = get_cached_or_extract_info(url)
     except yt_dlp.utils.DownloadError as e:
@@ -297,7 +344,6 @@ def check_download_feasibility(
             title,
         )
 
-    # 3. Check requested quality availability (ignoring storyboard mhtml items)
     if kind == "video" and quality:
         cap = settings.MAX_VIDEO_HEIGHT or 1080
         quality_map = {"best": cap, "1080p": 1080, "720p": 720, "480p": 480, "360p": 360}
@@ -325,7 +371,6 @@ def _build_format_selector(quality: str, max_height_cap: Optional[int] = None) -
     Prioritizes H.264 (avc1) + AAC (m4a) for instant low-RAM MP4 stream-copy merging on Render Free,
     then falls back to any codec within the height cap.
     Guarantees no trailing unconstrained '/best' or unconstrained '/worst' that could pick 4K/1080p.
-    Enforces max_height_cap (e.g. 720p for Render Free 512MB RAM).
     """
     quality_height_map = {"1080p": 1080, "720p": 720, "480p": 480, "360p": 360}
     target_h = quality_height_map.get(quality)
@@ -338,14 +383,12 @@ def _build_format_selector(quality: str, max_height_cap: Optional[int] = None) -
     if target_h is None:
         return "bestvideo[vcodec^=avc]+bestaudio[ext=m4a]/bestvideo+bestaudio/best"
 
-    # Strictly under target_h: no branch can exceed target_h
     steps = [h for h in (1080, 720, 480, 360) if h <= target_h]
     parts = []
     for h in steps:
         parts.append(f"bestvideo[height<={h}][vcodec^=avc]+bestaudio[ext=m4a]")
         parts.append(f"bestvideo[height<={h}]+bestaudio")
         parts.append(f"best[height<={h}]")
-    # worst is also strictly bounded by target_h - otherwise it could pick 4K
     parts.append(f"worstvideo[height<={target_h}]+worstaudio")
     parts.append(f"worst[height<={target_h}]")
     return "/".join(parts)
@@ -406,8 +449,7 @@ def _prepare_writable_cookiefile() -> Optional[str]:
     """
     Ensures yt-dlp always receives a WRITABLE cookiefile path inside STORAGE_DIR.
     Prevents 'OSError: [Errno 30] Read-only file system' when COOKIES_FILE is mounted
-    read-only (e.g. Render Secret Files at /etc/secrets/cookies.txt or Docker :ro volumes),
-    because yt-dlp writes updated session cookies back to cookiefile on exit.
+    read-only (e.g. Render Secret Files at /etc/secrets/cookies.txt or Docker :ro volumes).
     """
     runtime_cookies = settings.STORAGE_DIR / "runtime_cookies.txt"
 
@@ -440,33 +482,46 @@ def _prepare_writable_cookiefile() -> Optional[str]:
 
 
 def get_ydl_base_opts(extra_opts: Optional[dict] = None) -> dict:
-    """Constructs base yt-dlp options including proxy, cookies, retries, single-thread FFmpeg, and timeouts."""
+    """
+    Constructs base yt-dlp options including explicit Node.js runtime activation
+    (CRITICAL for yt-dlp 2026+ which only enables deno by default!), proxy, cookies,
+    single-thread FFmpeg, and timeouts.
+    """
+    # Configure JS runtimes explicitly: yt-dlp 2026+ only checks deno by default unless node is passed!
+    js_runtimes = {}
+    node_bin = shutil.which("node") or shutil.which("nodejs")
+    if node_bin:
+        js_runtimes["node"] = {"path": node_bin}
+    else:
+        js_runtimes["node"] = {}
+    deno_bin = shutil.which("deno")
+    if deno_bin:
+        js_runtimes["deno"] = {"path": deno_bin}
+
     opts = {
         "quiet": True,
         "no_warnings": True,
         "nocheckcertificate": True,
         "noplaylist": True,
         "geo_bypass": True,
+        "js_runtimes": js_runtimes,
         "socket_timeout": settings.YTDLP_TIMEOUT_SECONDS,
         "retries": 5,
         "fragment_retries": 5,
         "continuedl": True,
         "nopart": True,
-        "http_chunk_size": 10485760,  # 10MB chunk size prevents YouTube throttling
-        # Limit FFmpeg to 1 thread to prevent 8-16 core host threadpool RAM spikes on Render Free (512MB)
+        "http_chunk_size": 10485760,
         "postprocessor_args": {
             "ffmpeg": ["-threads", "1"],
         },
     }
 
-    # Force IPv4 if enabled to prevent cloud IPv6 429 rate-limiting
     if getattr(settings, "FORCE_IPV4", True):
         opts["source_address"] = "0.0.0.0"
 
     if settings.PROXY_URL:
         opts["proxy"] = settings.PROXY_URL
 
-    # Authentication & Cookies support (writable runtime copy prevents Read-Only FS crash)
     writable_cookiefile = _prepare_writable_cookiefile()
     if writable_cookiefile:
         opts["cookiefile"] = writable_cookiefile
@@ -501,6 +556,7 @@ def _raise_for_ydl_error(e: Exception, context_action: str = "обработке
         or "not a bot" in lower_msg
         or "age-restricted" in lower_msg
         or "http error 403" in lower_msg
+        or "the page needs to be reloaded" in lower_msg
     ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -512,11 +568,11 @@ def _raise_for_ydl_error(e: Exception, context_action: str = "обработке
         )
     elif "requested format is not available" in lower_msg:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=HTTP_422_STATUS,
             detail=(
                 f"Видеопоток в выбранном качестве (лимит ≤{settings.MAX_VIDEO_HEIGHT}p) недоступен. "
-                "Если YouTube заблокировал отдачу видеопотоков для IP-адреса облачного сервера, "
-                "добавьте COOKIES_TEXT или PROXY_URL в настройки окружения Render."
+                "YouTube заблокировал отдачу прямых видеопотоков для IP-адреса датацентра Render — "
+                "добавьте COOKIES_TEXT (куки из браузера) или PROXY_URL в настройки Environment на Render."
             )
         )
     elif "file is larger than max-filesize" in lower_msg:
@@ -561,12 +617,11 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
             detail=f"Длительность видео ({format_duration(duration)}) превышает допустимый лимит сервера ({max_hours} ч)."
         )
 
-    # 1. Parse raw formats for tech view (excluding mhtml storyboards)
     all_formats: list[FormatItem] = []
     raw_formats = meta.get("formats", [])
     formats = [f for f in raw_formats if not _is_storyboard_or_non_media(f)]
 
-    if not formats:
+    if not formats and not (meta.get("subtitles") or meta.get("automatic_captions")):
         if meta.get("is_live"):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -614,11 +669,10 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
             )
         )
 
-    # 2. Compute audio estimated size
     audio_est_bytes = duration * (160 * 1024 / 8) if duration > 0 else 0
     encoded_url = urllib.parse.quote(url, safe="")
+    has_any_media_formats = len(formats) > 0
 
-    # 3. Build preset Video Options: best, 1080p, 720p, 480p, 360p
     server_cap = settings.MAX_VIDEO_HEIGHT or 1080
     if settings.MAX_VIDEO_HEIGHT and settings.MAX_VIDEO_HEIGHT < 1080:
         quality_specs = [
@@ -640,7 +694,9 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
     video_options: list[VideoOption] = []
     for q_key, q_label, max_h, is_allowed_by_server in quality_specs:
         effective_cap = max_h or server_cap
-        has_compatible_stream = (not available_heights) or any(0 < h <= effective_cap for h in available_heights)
+        has_compatible_stream = has_any_media_formats and (
+            (not available_heights) or any(0 < h <= effective_cap for h in available_heights)
+        )
         is_available = bool(is_allowed_by_server and has_compatible_stream)
 
         best_match_size = None
@@ -671,7 +727,6 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
             )
         )
 
-    # 4. Build preset Audio Options: MP3 (320k) and M4A
     mp3_bytes = duration * (320 * 1024 / 8) if duration > 0 else None
     m4a_bytes = duration * (128 * 1024 / 8) if duration > 0 else None
     ffmpeg_ok = bool(get_ffmpeg_path())
@@ -684,7 +739,7 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
             filesize_approx_mb=round(mp3_bytes / (1024 * 1024), 1) if mp3_bytes else None,
             filesize_str=format_bytes(mp3_bytes) if mp3_bytes else "Размер уточняется",
             download_url=f"/api/download/audio?url={encoded_url}&format=mp3",
-            available=ffmpeg_ok,
+            available=bool(ffmpeg_ok and has_any_media_formats),
         ),
         AudioOption(
             format="m4a",
@@ -693,11 +748,10 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
             filesize_approx_mb=round(m4a_bytes / (1024 * 1024), 1) if m4a_bytes else None,
             filesize_str=format_bytes(m4a_bytes) if m4a_bytes else "Размер уточняется",
             download_url=f"/api/download/audio?url={encoded_url}&format=m4a",
-            available=True,
+            available=has_any_media_formats,
         ),
     ]
 
-    # 5. Build Subtitle / Transcript options
     subtitle_options: list[SubtitleOption] = []
     seen_langs = set()
 
@@ -816,7 +870,7 @@ def download_video_file(url: str, quality: str = "720p") -> Tuple[Path, str, str
         if settings.MAX_VIDEO_HEIGHT and downloaded_height > settings.MAX_VIDEO_HEIGHT + 1:
             shutil.rmtree(job_dir, ignore_errors=True)
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=HTTP_422_STATUS,
                 detail=f"Скачанное разрешение ({downloaded_height}p) превышает лимит сервера ({settings.MAX_VIDEO_HEIGHT}p)."
             )
 
@@ -947,7 +1001,6 @@ def _parse_json3_or_xml_to_vtt_or_srt(raw_content: str) -> Optional[str]:
     if not stripped:
         return None
 
-    # 1. Check JSON3 format
     if stripped.startswith("{"):
         try:
             data = json.loads(stripped)
@@ -971,7 +1024,6 @@ def _parse_json3_or_xml_to_vtt_or_srt(raw_content: str) -> Optional[str]:
         except Exception:
             pass
 
-    # 2. Check XML (srv1, srv2, srv3, ttml) format
     if stripped.startswith("<"):
         try:
             root = ET.fromstring(stripped)
@@ -984,7 +1036,6 @@ def _parse_json3_or_xml_to_vtt_or_srt(raw_content: str) -> Optional[str]:
                     clean_txt = re.sub(r"\s+", " ", clean_txt)
                     if not clean_txt:
                         continue
-                    # Parse start/dur or t/d attributes
                     start_ms = 0
                     dur_ms = 3000
                     if "t" in elem.attrib:
@@ -1106,15 +1157,10 @@ def _fetch_subtitle_from_info_tracks(info: dict, lang: str) -> Optional[str]:
     """
     Directly downloads subtitle content using the track URLs already extracted in `info`
     (from `subtitles` or `automatic_captions`).
-    Prevents redundant yt-dlp video page re-extractions and fixes 404 errors when outtmpl/formats vary.
     """
     manual_subs = info.get("subtitles") or {}
     auto_subs = info.get("automatic_captions") or {}
 
-    # Candidate language keys in priority order:
-    # 1. Exact lang in manual, 2. Exact lang in auto,
-    # 3. Prefix match (e.g. 'ru-orig' or 'ru-RU') in manual/auto,
-    # 4. Fallback 'ru'/'en' if default was requested
     track_list = None
     if lang in manual_subs and manual_subs[lang]:
         track_list = manual_subs[lang]
@@ -1141,7 +1187,6 @@ def _fetch_subtitle_from_info_tracks(info: dict, lang: str) -> Optional[str]:
     if not track_list or not isinstance(track_list, list):
         return None
 
-    # Sort tracks by preferred format: srt -> vtt -> json3 -> srv3 -> srv1 -> ttml
     ext_priority = {"srt": 0, "vtt": 1, "json3": 2, "srv3": 3, "srv2": 4, "srv1": 5, "ttml": 6}
     sorted_tracks = sorted(
         [t for t in track_list if isinstance(t, dict) and t.get("url")],
@@ -1151,7 +1196,6 @@ def _fetch_subtitle_from_info_tracks(info: dict, lang: str) -> Optional[str]:
     if not sorted_tracks:
         return None
 
-    # Use yt-dlp's configured urlopen (respects proxy, cookies, and browser headers)
     opts = get_ydl_base_opts({"skip_download": True})
     with yt_dlp.YoutubeDL(opts) as ydl:
         for track in sorted_tracks[:3]:
@@ -1204,7 +1248,6 @@ def download_subtitles_file(url: str, lang: str = "ru", format_type: str = "txt"
         title = "subtitles"
         content: Optional[str] = None
 
-        # Step 1: Fast direct download from cached/extracted info tracks (0 extra player requests!)
         try:
             info = get_cached_or_extract_info(url)
             if info and info.get("title"):
@@ -1213,12 +1256,12 @@ def download_subtitles_file(url: str, lang: str = "ru", format_type: str = "txt"
         except Exception as e:
             logger.warning(f"Cached info subtitle extraction failed: {sanitize_error_message(e)}")
 
-        # Step 2: Fallback to yt-dlp subtitle writer if direct track URL wasn't used
         if not content:
             out_template = str(job_dir / "subtitles.%(ext)s")
             for is_auto in (False, True):
                 ydl_opts_sub = get_ydl_base_opts({
                     "skip_download": True,
+                    "ignore_no_formats_error": True,
                     "writesubtitles": not is_auto,
                     "writeautomaticsub": is_auto,
                     "subtitleslangs": [lang],
