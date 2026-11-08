@@ -1,0 +1,25 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: yt-analyzer-web
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8000}:8000"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+      - PROXY_URL=${PROXY_URL:-}
+      - COOKIES_FILE=${COOKIES_FILE:-}
+      - COOKIES_TEXT=${COOKIES_TEXT:-}
+      - COOKIES_FROM_BROWSER=${COOKIES_FROM_BROWSER:-}
+      - MAX_DURATION_SECONDS=${MAX_DURATION_SECONDS:-14400}
+      - MAX_FILE_SIZE_MB=${MAX_FILE_SIZE_MB:-1024}
+      - RATE_LIMIT_PER_MINUTE=${RATE_LIMIT_PER_MINUTE:-30}
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./downloads:/app/downloads
+      - ./cookies.txt:/app/cookies.txt:ro

@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: yt-analyzer-web
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: PROXY_URL
+        sync: false
+      - key: MAX_DURATION_SECONDS
+        value: 7200
+      - key: MAX_FILE_SIZE_MB
+        value: 500
+      - key: RATE_LIMIT_PER_MINUTE
+        value: 20
