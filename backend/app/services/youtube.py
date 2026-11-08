@@ -68,7 +68,7 @@ def format_duration(seconds: Optional[int | float]) -> str:
 
 
 def get_ydl_base_opts(extra_opts: Optional[dict] = None) -> dict:
-    """Constructs base yt-dlp options including proxy and timeouts."""
+    """Constructs base yt-dlp options including proxy, cookies, and timeouts."""
     opts = {
         "quiet": True,
         "no_warnings": True,
@@ -77,7 +77,8 @@ def get_ydl_base_opts(extra_opts: Optional[dict] = None) -> dict:
         "socket_timeout": settings.YTDLP_TIMEOUT_SECONDS,
         "extractor_args": {
             "youtube": {
-                "player_client": ["web", "ios", "android"],
+                # Using mweb, web, and tv (avoiding ios which requires strict po_token)
+                "player_client": ["mweb", "web", "tv"],
             }
         },
     }
@@ -111,7 +112,10 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
     Extracts complete metadata, available formats, estimated sizes,
     and available subtitle tracks for a YouTube video.
     """
-    ydl_opts = get_ydl_base_opts({"skip_download": True})
+    ydl_opts = get_ydl_base_opts({
+        "skip_download": True,
+        "ignore_no_formats_error": True,
+    })
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -134,6 +138,15 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
                     "или проверка бота 'Sign in to confirm you're not a bot'). "
                     "Для доступа подключите cookies вашего аккаунта (укажите COOKIES_FILE, COOKIES_TEXT "
                     "или COOKIES_FROM_BROWSER в настройках .env сервера)."
+                )
+            )
+        elif "Requested format is not available" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Запрошенный формат недоступен. Это часто происходит, если видео является прямой "
+                    "трансляцией (Live), запланированной премьерой или YouTube ограничил отдачу форматов "
+                    "для данного региона/клиента."
                 )
             )
         elif "Video unavailable" in error_msg:
@@ -164,6 +177,23 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
     # 1. Parse raw formats for tech view
     all_formats: list[FormatItem] = []
     formats = meta.get("formats", [])
+
+    if not formats:
+        if meta.get("is_live"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Это видео является прямым эфиром (Live stream). Скачивание форматов станет доступно после завершения трансляции и обработки архива YouTube."
+            )
+        elif meta.get("live_status") == "is_upcoming":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Это видео является запланированной премьерой или будущей трансляцией. Скачивание пока недоступно."
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="YouTube не вернул доступных форматов для данного видео (возможно, трансляция ещё обрабатывается, видео заблокировано в регионе или требует авторизации)."
+            )
     for f in formats:
         f_id = str(f.get("format_id", ""))
         ext = f.get("ext", "mp4")
@@ -323,17 +353,17 @@ def download_video_file(url: str, quality: str = "720p") -> Tuple[Path, str, str
     job_dir = settings.STORAGE_DIR / unique_job_id
     job_dir.mkdir(parents=True, exist_ok=True)
 
-    # Quality selector
+    # Quality selector with flexible fallbacks (FFmpeg merges into MP4 via merge_output_format)
     if quality == "1080p":
-        fmt = "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best"
+        fmt = "bestvideo[height<=1080]+bestaudio/best[height<=1080]/bestvideo+bestaudio/best"
     elif quality == "720p":
-        fmt = "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]/best"
+        fmt = "bestvideo[height<=720]+bestaudio/best[height<=720]/bestvideo+bestaudio/best"
     elif quality == "480p":
-        fmt = "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480]/best"
+        fmt = "bestvideo[height<=480]+bestaudio/best[height<=480]/bestvideo+bestaudio/best"
     elif quality == "360p":
-        fmt = "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=360]+bestaudio/best[height<=360]/best"
+        fmt = "bestvideo[height<=360]+bestaudio/best[height<=360]/bestvideo+bestaudio/best"
     else:  # best
-        fmt = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best"
+        fmt = "bestvideo+bestaudio/best"
 
     out_template = str(job_dir / "%(title)s_%(resolution)s.%(ext)s")
 
