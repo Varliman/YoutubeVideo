@@ -442,7 +442,7 @@ async function triggerDownload(btn, url) {
     if (format) checkParams.set("format", format);
     if (lang) checkParams.set("lang", lang);
 
-    // 2. Perform lightweight pre-check on backend (concurrency, limits, ffmpeg)
+    // 2. Perform pre-check on backend (concurrency, limits, ffmpeg, video availability)
     const checkRes = await fetch("/api/check-download?" + checkParams.toString());
     if (!checkRes.ok) {
       let errorDetail = "Ошибка при проверке возможности скачивания";
@@ -456,12 +456,23 @@ async function triggerDownload(btn, url) {
       return;
     }
 
+    let downloadFilename = "download";
+    try {
+      const checkData = await checkRes.json();
+      if (checkData.title) {
+        const ext = kind === "audio" ? (format || "mp3") : (kind === "transcript" ? (lang ? `${lang}.${format || "txt"}` : (format || "txt")) : "mp4");
+        downloadFilename = `${checkData.title}.${ext}`;
+      }
+    } catch (e) {
+      // ignore JSON parse if empty
+    }
+
     // 3. Pre-check succeeded: trigger native direct streaming download via <a> tag.
     // Avoids buffering multi-hundred MB into browser V8 JS heap (prevents browser tab OOM crashes).
     showToast("Сервер готовит поток. Файл сохраняется напрямую браузером...");
     const a = document.createElement("a");
     a.href = url;
-    a.download = "";
+    a.setAttribute("download", downloadFilename);
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);

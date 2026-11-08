@@ -2,6 +2,7 @@
 
 import os
 import re
+import time
 import uuid
 import shutil
 import logging
@@ -27,19 +28,58 @@ def sanitize_error_message(error: Exception | str) -> str:
     msg = str(error)
     # Strip user:password credentials from URLs (e.g. http://login:pass@host:port)
     msg = re.sub(r'://([^:/\s]+):([^@/\s]+)@', r'://\1:***@', msg)
-    # Also mask raw proxy credentials if present in settings
+    # Optionally mask bare proxy password if it is at least 6 characters and bounded
     if getattr(settings, "PROXY_URL", None):
         match = re.search(r'://([^:/\s]+):([^@/\s]+)@', settings.PROXY_URL)
         if match:
             pwd = match.group(2)
-            if pwd and len(pwd) > 2:
-                msg = msg.replace(pwd, "***")
+            if pwd and len(pwd) >= 6:
+                msg = re.sub(rf'(?<!\w){re.escape(pwd)}(?!\w)', '***', msg)
     return msg
 
 
 _download_semaphore = threading.Semaphore(settings.MAX_CONCURRENT_DOWNLOADS)
 _active_downloads_count = 0
 _active_downloads_lock = threading.Lock()
+
+# 60-second in-memory metadata cache to prevent redundant extract_info calls
+_INFO_CACHE: dict[str, Tuple[float, dict]] = {}
+_INFO_CACHE_LOCK = threading.Lock()
+_CACHE_TTL_SECONDS = 60.0
+
+
+def get_cached_or_extract_info(url: str, extra_opts: Optional[dict] = None) -> dict:
+    """
+    Retrieves video info dictionary from in-memory cache or extracts via yt-dlp.
+    Cached for 60 seconds to eliminate redundant network extraction between pre-check and download.
+    """
+    now = time.time()
+    with _INFO_CACHE_LOCK:
+        # Periodic purge of entries older than 120s
+        expired = [k for k, (ts, _) in _INFO_CACHE.items() if now - ts > 120]
+        for k in expired:
+            _INFO_CACHE.pop(k, None)
+
+        cached = _INFO_CACHE.get(url)
+        if cached and (now - cached[0] < _CACHE_TTL_SECONDS):
+            return cached[1]
+
+    opts = get_ydl_base_opts({
+        "skip_download": True,
+        "ignore_no_formats_error": True,
+        "retries": 3,
+        "extractor_retries": 3,
+    })
+    if extra_opts:
+        opts.update(extra_opts)
+
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+
+    with _INFO_CACHE_LOCK:
+        _INFO_CACHE[url] = (time.time(), info)
+
+    return info
 
 
 def get_active_downloads_count() -> int:
@@ -72,7 +112,8 @@ class DownloadSlot:
                     f"Сервер в данный момент выполняет другую загрузку. "
                     f"Из-за лимита оперативной памяти (512 МБ RAM) загрузки выполняются строго по очереди "
                     f"(лимит: {settings.MAX_CONCURRENT_DOWNLOADS} одновременный процесс). "
-                    f"Пожалуйста, повторите попытку через 1-2 минуты."
+                    f"Слот мог быть занят сразу после предварительной проверки. "
+                    f"Пожалуйста, повторите попытку через несколько минут."
                 )
             )
         with _active_downloads_lock:
@@ -87,81 +128,98 @@ class DownloadSlot:
             _download_semaphore.release()
 
 
-def check_download_feasibility(kind: str, quality: Optional[str] = None, format_str: Optional[str] = None) -> Tuple[bool, str]:
+def check_download_feasibility(
+    url: str,
+    kind: str,
+    quality: Optional[str] = None,
+    format_str: Optional[str] = None,
+    lang: Optional[str] = None,
+) -> Tuple[bool, str, Optional[str]]:
     """
-    Fast pre-flight check before initiating heavy file downloads.
-    Checks concurrency slots, FFmpeg availability, and resolution caps.
-    Returns: (is_ok: bool, message: str)
+    Pre-flight check before initiating heavy file downloads.
+    1. Checks server limits (FFmpeg, active download semaphore).
+    2. Checks video accessibility (extracts/uses cached metadata, detects private/429/403).
+    3. Checks format/quality availability (verifies video height <= requested quality).
+    Returns: (is_ok: bool, message: str, title: Optional[str])
     """
-    if get_active_downloads_count() >= settings.MAX_CONCURRENT_DOWNLOADS:
-        return False, (
-            f"Сервер в данный момент выполняет другую загрузку. "
-            f"Из-за лимита оперативной памяти (512 МБ) запросы обрабатываются по очереди "
-            f"(лимит: {settings.MAX_CONCURRENT_DOWNLOADS}). Пожалуйста, повторите попытку через минуту."
+    # 1. Server constraints - cheap
+    if not get_ffmpeg_path() and (kind == "video" or format_str == "mp3"):
+        return False, "FFmpeg не установлен на сервере. Слияние аудио и видео невозможно.", None
+
+    if kind in ("video", "audio") and get_active_downloads_count() >= settings.MAX_CONCURRENT_DOWNLOADS:
+        return (
+            False,
+            f"Сервер занят другой загрузкой. Из-за лимита памяти (512 МБ) "
+            f"загрузки выполняются строго по очереди. Попробуйте через несколько минут.",
+            None
         )
 
-    if kind == "video":
-        if settings.MAX_VIDEO_HEIGHT and quality == "1080p" and settings.MAX_VIDEO_HEIGHT < 1080:
-            return False, f"Качество 1080p отключено из-за лимита сервера ({settings.MAX_VIDEO_HEIGHT}p) на Render Free (512 МБ RAM)."
-        if not get_ffmpeg_path():
-            return False, "FFmpeg не обнаружен на сервере. Объединение видео и аудио невозможно."
+    # 2. Real video accessibility check - uses 60s in-memory cache
+    try:
+        info = get_cached_or_extract_info(url)
+    except yt_dlp.utils.DownloadError as e:
+        err_msg = sanitize_error_message(e)
+        if "429" in err_msg:
+            return False, "YouTube заблокировал IP-адрес сервера (HTTP 429 Too Many Requests).", None
+        elif "Private video" in err_msg or "Sign in" in err_msg:
+            return False, "Видео требует авторизации YouTube (приватное или 18+).", None
+        elif "Video unavailable" in err_msg:
+            return False, "Видео недоступно, удалено или заблокировано правообладателем.", None
+        return False, f"Ошибка доступа к видео: {err_msg}", None
+    except Exception as e:
+        return False, f"Ошибка проверки видео: {sanitize_error_message(e)}", None
 
-    elif kind == "audio":
-        if (format_str or "mp3").lower() == "mp3" and not get_ffmpeg_path():
-            return False, "FFmpeg не обнаружен на сервере. Для MP3 требуется FFmpeg (выберите M4A)."
+    title = info.get("title", "")
 
-    return True, "Готово к скачиванию"
+    # 3. Check requested quality availability
+    if kind == "video" and quality:
+        cap = settings.MAX_VIDEO_HEIGHT or 1080
+        quality_map = {"best": cap, "1080p": 1080, "720p": 720, "480p": 480, "360p": 360}
+        target_h = quality_map.get(quality, cap)
+        want = min(target_h, cap)
+        formats = info.get("formats", [])
+        heights = [f.get("height") or 0 for f in formats]
+        if not any(0 < h <= want for h in heights):
+            return False, f"Видео недоступно в качестве ≤{want}p.", title
+
+    elif kind == "transcript" and lang:
+        manual = info.get("subtitles") or {}
+        auto = info.get("automatic_captions") or {}
+        available_langs = set(manual.keys()) | set(auto.keys()) | {"ru", "en"}
+        if lang not in available_langs:
+            return False, f"Субтитры для языка '{lang}' не найдены у данного видео.", title
+
+    clean_title = sanitize_filename(title, max_len=80)
+    return True, f"Готово: {clean_title}", title
 
 
 def _build_format_selector(quality: str, max_height_cap: Optional[int] = None) -> str:
     """
     Builds a robust yt-dlp format selector with strict downward cascading.
-    Guarantees no trailing unconstrained '/best' that could pick 4K/1080p on lower quality requests.
+    Guarantees no trailing unconstrained '/best' or unconstrained '/worst' that could pick 4K/1080p.
     Enforces max_height_cap (e.g. 720p for Render Free 512MB RAM).
     """
-    quality_height_map = {
-        "1080p": 1080,
-        "720p": 720,
-        "480p": 480,
-        "360p": 360,
-    }
-
+    quality_height_map = {"1080p": 1080, "720p": 720, "480p": 480, "360p": 360}
     target_h = quality_height_map.get(quality)
-
     if max_height_cap:
         if target_h and target_h > max_height_cap:
             target_h = max_height_cap
         elif quality == "best":
             target_h = max_height_cap
 
-    if target_h == 1080:
-        return (
-            "bestvideo[height<=1080]+bestaudio/best[height<=1080]/"
-            "bestvideo[height<=720]+bestaudio/best[height<=720]/"
-            "bestvideo[height<=480]+bestaudio/best[height<=480]/"
-            "worstvideo+worstaudio/worst"
-        )
-    elif target_h == 720:
-        return (
-            "bestvideo[height<=720]+bestaudio/best[height<=720]/"
-            "bestvideo[height<=480]+bestaudio/best[height<=480]/"
-            "bestvideo[height<=360]+bestaudio/best[height<=360]/"
-            "worstvideo+worstaudio/worst"
-        )
-    elif target_h == 480:
-        return (
-            "bestvideo[height<=480]+bestaudio/best[height<=480]/"
-            "bestvideo[height<=360]+bestaudio/best[height<=360]/"
-            "worstvideo+worstaudio/worst"
-        )
-    elif target_h == 360:
-        return (
-            "bestvideo[height<=360]+bestaudio/best[height<=360]/"
-            "worstvideo+worstaudio/worst"
-        )
-    else:
-        # best with no height cap
+    if target_h is None:
         return "bestvideo+bestaudio/best"
+
+    # Strictly under target_h: no branch can exceed target_h
+    steps = [h for h in (1080, 720, 480, 360) if h <= target_h]
+    parts = []
+    for h in steps:
+        parts.append(f"bestvideo[height<={h}]+bestaudio")
+        parts.append(f"best[height<={h}]")
+    # worst is also strictly bounded by target_h - otherwise it could pick 4K
+    parts.append(f"worstvideo[height<={target_h}]+worstaudio")
+    parts.append(f"worst[height<={target_h}]")
+    return "/".join(parts)
 
 
 def get_ffmpeg_path() -> Optional[str]:
@@ -263,16 +321,8 @@ def extract_video_metadata(url: str) -> AnalyzeResponse:
     Extracts complete metadata, available formats, estimated sizes,
     and available subtitle tracks for a YouTube video.
     """
-    ydl_opts = get_ydl_base_opts({
-        "skip_download": True,
-        "ignore_no_formats_error": True,
-        "retries": 3,
-        "extractor_retries": 3,
-    })
-
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            meta = ydl.extract_info(url, download=False)
+        meta = get_cached_or_extract_info(url)
     except yt_dlp.utils.DownloadError as e:
         error_msg = sanitize_error_message(e)
         if "429" in error_msg:
@@ -551,6 +601,19 @@ def download_video_file(url: str, quality: str = "720p") -> Tuple[Path, str, str
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 title = sanitize_filename(info.get("title", "video"))
+        except yt_dlp.utils.DownloadError as e:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            sanitized_err = sanitize_error_message(e)
+            if "Requested format is not available" in str(e):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Видео недоступно в качестве ≤{settings.MAX_VIDEO_HEIGHT}p."
+                )
+            logger.error(f"Error downloading video {url} [{quality}]: {sanitized_err}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Не удалось скачать видео: {sanitized_err}"
+            )
         except Exception as e:
             shutil.rmtree(job_dir, ignore_errors=True)
             sanitized_err = sanitize_error_message(e)
@@ -558,6 +621,15 @@ def download_video_file(url: str, quality: str = "720p") -> Tuple[Path, str, str
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Не удалось скачать видео: {sanitized_err}"
+            )
+
+        # Belt-and-suspenders check: ensure downloaded resolution did not exceed MAX_VIDEO_HEIGHT
+        downloaded_height = info.get("height") or 0
+        if settings.MAX_VIDEO_HEIGHT and downloaded_height > settings.MAX_VIDEO_HEIGHT + 1:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Скачанное разрешение ({downloaded_height}p) превышает лимит сервера ({settings.MAX_VIDEO_HEIGHT}p)."
             )
 
         # Locate generated output file

@@ -31,8 +31,25 @@ from .services.youtube import (
 
 
 def get_process_rss_mb() -> float:
-    """Measures current process Resident Set Size (RSS) memory in megabytes."""
-    # 1. Linux /proc/self/status (Render container)
+    """
+    Measures memory usage. On Linux / Docker (e.g. Render), reads container
+    cgroup memory to account for both Python and child FFmpeg processes.
+    Falls back to resource.getrusage or psutil on Windows/macOS.
+    """
+    # 1. cgroup v2 and v1 (Linux container memory covering Python + FFmpeg children)
+    for path in (
+        "/sys/fs/cgroup/memory.current",
+        "/sys/fs/cgroup/memory/memory.usage_in_bytes",
+    ):
+        try:
+            p = Path(path)
+            if p.exists():
+                val = int(p.read_text().strip())
+                return round(val / (1024 * 1024), 1)
+        except (FileNotFoundError, ValueError, PermissionError, Exception):
+            continue
+
+    # 2. Linux /proc/self/status fallback
     try:
         proc_status = Path("/proc/self/status")
         if proc_status.exists():
@@ -43,7 +60,7 @@ def get_process_rss_mb() -> float:
     except Exception:
         pass
 
-    # 2. resource.getrusage (Linux / macOS POSIX)
+    # 3. resource.getrusage (macOS / POSIX fallback)
     try:
         import resource
         import sys
@@ -54,7 +71,7 @@ def get_process_rss_mb() -> float:
     except Exception:
         pass
 
-    # 3. psutil fallback (Windows dev environment)
+    # 4. psutil fallback (Windows dev environment)
     try:
         import psutil
         return round(psutil.Process().memory_info().rss / (1024 * 1024), 1)
@@ -146,22 +163,29 @@ def check_download(
 ):
     """
     Pre-flight check before initiating heavy file downloads.
-    Validates URL, rate limit, server concurrency slot, and FFmpeg availability.
-    Prevents silent browser download failures and avoids client memory leaks.
+    Validates URL, rate limit, server concurrency slot, and actual video accessibility.
+    Returns video title and status, preventing silent browser download failures.
     """
     rate_limiter.check(request)
     normalized_url = validate_youtube_url(url)
 
-    is_ok, msg = check_download_feasibility(kind=kind, quality=quality, format_str=format)
+    is_ok, msg, title = check_download_feasibility(
+        url=normalized_url,
+        kind=kind,
+        quality=quality,
+        format_str=format,
+        lang=lang
+    )
     if not is_ok:
-        status_code = (
-            status.HTTP_503_SERVICE_UNAVAILABLE
-            if "Сервер в данный момент" in msg
-            else status.HTTP_400_BAD_REQUEST
-        )
+        if "Сервер в данный момент" in msg or "Сервер занят" in msg:
+            status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        elif "Видео недоступно в качестве" in msg:
+            status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+        else:
+            status_code = status.HTTP_400_BAD_REQUEST
         raise HTTPException(status_code=status_code, detail=msg)
 
-    return CheckDownloadResponse(ok=True, message=msg)
+    return CheckDownloadResponse(ok=True, message=msg, title=title)
 
 
 @app.post("/api/analyze", response_model=AnalyzeResponse)
